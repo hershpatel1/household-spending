@@ -294,8 +294,13 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
   <!-- CONFIG TAB -->
   <section id="tab-config" class="hidden">
     <div class="section">
-      <div class="section-label" id="configCurrentLabel">Set this month's budgets</div>
+      <div class="section-label">Edit budgets</div>
       <div class="card">
+        <div class="month-nav" style="display:inline-flex;margin-bottom:16px;">
+          <button type="button" id="cfgPrevBtn" aria-label="Previous month">&#8249;</button>
+          <span id="cfgMonthLabel">-</span>
+          <button type="button" id="cfgNextBtn" aria-label="Next month">&#8250;</button>
+        </div>
         <form class="entry-form" id="configForm">
           <div class="field">
             <label for="cfgRiyaan">Riyaan budget (£)</label>
@@ -306,22 +311,59 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
             <input type="number" id="cfgDayToDay" min="0" step="1" required>
           </div>
           <div class="form-actions">
-            <button type="submit" class="btn">Save budgets</button>
+            <button type="submit" class="btn" id="cfgSubmitBtn">Save budgets</button>
           </div>
         </form>
-        <div class="config-note">Changes here apply immediately to the current month. Past months are locked and shown below for reference only.</div>
+        <div class="config-note" id="configNote">Changes here apply immediately to the current month.</div>
       </div>
     </div>
+
     <div class="section">
-      <div class="section-label">Past months</div>
+      <div class="section-label">Backfill historical budgets</div>
+      <div class="card">
+        <form class="entry-form" id="backfillForm">
+          <div class="field">
+            <label for="bfStart">From month</label>
+            <input type="month" id="bfStart" required>
+          </div>
+          <div class="field">
+            <label for="bfEnd">To month</label>
+            <input type="month" id="bfEnd" required>
+          </div>
+          <div class="field">
+            <label for="bfRiyaan">Riyaan budget (£)</label>
+            <input type="number" id="bfRiyaan" min="0" step="1" required>
+          </div>
+          <div class="field">
+            <label for="bfDayToDay">Day-to-day budget (£)</label>
+            <input type="number" id="bfDayToDay" min="0" step="1" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn secondary">Fill missing months</button>
+          </div>
+        </form>
+        <div class="config-note">Only fills months in this range that don't already have a budget set - never overwrites an existing month. Use the editor above to change a month that's already set.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">All months</div>
       <div class="card" id="pastBudgetsCard">
-        <div class="empty-state" id="pastBudgetsEmpty">No past months yet.</div>
+        <div class="empty-state" id="pastBudgetsEmpty">No budgets set yet.</div>
       </div>
     </div>
   </section>
 
   <!-- ANALYTICS TAB -->
   <section id="tab-analytics" class="hidden">
+    <div class="section">
+      <div class="direction-toggle" style="max-width:320px;">
+        <button type="button" id="scopeMonthBtn" class="active-out">This month</button>
+        <button type="button" id="scopeYtdBtn">Year to date</button>
+      </div>
+      <div class="config-note" id="scopeRangeLabel" style="margin-top:8px;"></div>
+    </div>
+
     <div class="section">
       <div class="section-label">Budget vs actual</div>
       <div class="grid-2" id="analyticsBudgetCards"></div>
@@ -363,6 +405,7 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
 
     <div class="section">
       <div class="section-label">Month-over-month trend</div>
+      <div class="config-note" style="margin-top:-6px;margin-bottom:10px;">Always shown by month, regardless of the toggle above.</div>
       <div class="card chart-card"><canvas id="trendChart"></canvas></div>
     </div>
 
@@ -400,10 +443,10 @@ const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-const CATEGORIES = ["Clothes","Furnishings & Furniture","Food & Household","Going Out","Travel & Parking","Charity","TakeOut","Petrol","Board Games","Other"];
-const ACCOUNTS = ["Hersh Credit","Hersh Debit","Sonali Credit","Sonali Debit","Joint","Cash"];
+const CATEGORIES = ["Food & Household","Clothes","Furnishings & Furniture","Going Out","Travel & Parking","Charity","TakeOut","Petrol","Board Games","Other"];
+const ACCOUNTS = ["Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit","Joint","Cash"];
 const PAID_BY = ["Hersh","Sonali"];
-const POTS = [{key:"riyaan",label:"Riyaan"},{key:"dayToDay",label:"Day-to-day"}];
+const POTS = [{key:"dayToDay",label:"Day-to-day"},{key:"riyaan",label:"Riyaan"}];
 
 function pad(n){return String(n).padStart(2,"0");}
 function todayISO(){const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;}
@@ -438,6 +481,8 @@ document.getElementById("fDate").value = todayISO();
 
 let viewMonthKey = currentRealMonthKey();
 const realCurrentMK = currentRealMonthKey();
+let configMonthKey = realCurrentMK;
+let analyticsScope = "month"; // "month" | "ytd"
 
 let allTransactions = [];      // full live set from Firestore
 let allBudgets = {};           // { monthKey: {riyaan, dayToDay} }
@@ -481,6 +526,50 @@ function spendByPot(mk){
   tx.forEach(t=>{
     const sign = t.direction==="out" ? 1 : -1;
     out[t.pot] = (out[t.pot]||0) + sign*Number(t.value);
+  });
+  return out;
+}
+
+/* ---------- UK financial year / range helpers (for YTD analytics) ---------- */
+function fyStartKeyFor(mk){
+  const [y,m] = mk.split("-").map(Number);
+  const fyStartYear = m>=4 ? y : y-1;
+  return `${fyStartYear}-04`;
+}
+function fyLabel(startKey){
+  const y = Number(startKey.split("-")[0]);
+  return `FY ${y}/${String(y+1).slice(2)}`;
+}
+function monthsBetweenInclusive(startKey, endKey){
+  let [y,m] = startKey.split("-").map(Number);
+  const [ey,em] = endKey.split("-").map(Number);
+  const out = [];
+  while(y<ey || (y===ey && m<=em)){
+    out.push(`${y}-${pad(m)}`);
+    m++;
+    if(m>12){ m=1; y++; }
+  }
+  return out;
+}
+function txForRange(monthKeys){
+  const set = new Set(monthKeys);
+  return allTransactions.filter(t=>set.has(t.monthKey));
+}
+function spendByPotForRange(monthKeys){
+  const out = {riyaan:0, dayToDay:0};
+  monthKeys.forEach(mk=>{
+    const s = spendByPot(mk);
+    out.riyaan += s.riyaan;
+    out.dayToDay += s.dayToDay;
+  });
+  return out;
+}
+function budgetForRange(monthKeys){
+  const out = {riyaan:0, dayToDay:0};
+  monthKeys.forEach(mk=>{
+    const b = allBudgets[mk] || {};
+    out.riyaan += Number(b.riyaan)||0;
+    out.dayToDay += Number(b.dayToDay)||0;
   });
   return out;
 }
@@ -604,20 +693,92 @@ async function removeTx(id){
 window.__startEdit = startEdit;
 window.__removeTx = removeTx;
 
+/* ---------- Config: month navigation ---------- */
+document.getElementById("cfgPrevBtn").addEventListener("click", ()=>{
+  const [y,m] = configMonthKey.split("-").map(Number);
+  const d = new Date(y, m-2, 1);
+  configMonthKey = `${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+  renderConfigTab();
+});
+document.getElementById("cfgNextBtn").addEventListener("click", ()=>{
+  if(configMonthKey===realCurrentMK) return;
+  const [y,m] = configMonthKey.split("-").map(Number);
+  const d = new Date(y, m, 1);
+  configMonthKey = `${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+  renderConfigTab();
+});
+
 /* ---------- Config form ---------- */
 const configForm = document.getElementById("configForm");
 configForm.addEventListener("submit", async (e)=>{
   e.preventDefault();
   const riyaan = parseFloat(document.getElementById("cfgRiyaan").value)||0;
   const dayToDay = parseFloat(document.getElementById("cfgDayToDay").value)||0;
+  const isPast = configMonthKey !== realCurrentMK;
+  if(isPast){
+    const ok = confirm(`You're editing budgets for ${formatMonthLabel(configMonthKey)}, a past month. This will overwrite the existing record for that month. Continue?`);
+    if(!ok) return;
+  }
   try{
-    await setDoc(doc(db,"budgets",realCurrentMK), {riyaan, dayToDay, updatedAt:serverTimestamp()}, {merge:true});
-    statusLine.textContent = "Budgets saved for " + formatMonthLabel(realCurrentMK);
+    await setDoc(doc(db,"budgets",configMonthKey), {riyaan, dayToDay, updatedAt:serverTimestamp()}, {merge:true});
+    statusLine.textContent = "Budgets saved for " + formatMonthLabel(configMonthKey);
     statusLine.classList.remove("err");
   }catch(err){
     statusLine.textContent = "Save failed: "+err.message;
     statusLine.classList.add("err");
   }
+});
+
+/* ---------- Backfill historical budgets ---------- */
+document.getElementById("bfStart").value = "2026-03";
+document.getElementById("bfEnd").value = realCurrentMK;
+document.getElementById("bfRiyaan").value = 300;
+document.getElementById("bfDayToDay").value = 650;
+
+const backfillForm = document.getElementById("backfillForm");
+backfillForm.addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  const startKey = document.getElementById("bfStart").value;
+  const endKey = document.getElementById("bfEnd").value;
+  const riyaan = parseFloat(document.getElementById("bfRiyaan").value)||0;
+  const dayToDay = parseFloat(document.getElementById("bfDayToDay").value)||0;
+  if(!startKey || !endKey || startKey>endKey){
+    statusLine.textContent = "Backfill failed: check the from/to months.";
+    statusLine.classList.add("err");
+    return;
+  }
+  const months = monthsBetweenInclusive(startKey, endKey);
+  const toFill = months.filter(mk => !allBudgets[mk]);
+  const skipped = months.filter(mk => !!allBudgets[mk]);
+  if(toFill.length===0){
+    statusLine.textContent = "Backfill: nothing to do, every month in that range already has a budget.";
+    statusLine.classList.remove("err");
+    return;
+  }
+  try{
+    for(const mk of toFill){
+      await setDoc(doc(db,"budgets",mk), {riyaan, dayToDay, updatedAt:serverTimestamp()});
+    }
+    statusLine.textContent = `Backfill complete: set ${toFill.length} month(s)` + (skipped.length ? `, skipped ${skipped.length} already-set month(s).` : ".");
+    statusLine.classList.remove("err");
+  }catch(err){
+    statusLine.textContent = "Backfill failed: "+err.message;
+    statusLine.classList.add("err");
+  }
+});
+
+/* ---------- Analytics scope toggle ---------- */
+document.getElementById("scopeMonthBtn").addEventListener("click", ()=>{
+  analyticsScope = "month";
+  document.getElementById("scopeMonthBtn").classList.add("active-out");
+  document.getElementById("scopeYtdBtn").classList.remove("active-in");
+  renderAnalytics();
+});
+document.getElementById("scopeYtdBtn").addEventListener("click", ()=>{
+  analyticsScope = "ytd";
+  document.getElementById("scopeYtdBtn").classList.add("active-in");
+  document.getElementById("scopeMonthBtn").classList.remove("active-out");
+  renderAnalytics();
 });
 
 /* ---------- Render: shared ---------- */
@@ -712,8 +873,16 @@ function escapeHtml(s){
 }
 
 function renderConfigTab(){
-  document.getElementById("configCurrentLabel").textContent = "Set budgets for " + formatMonthLabel(realCurrentMK);
-  const cur = allBudgets[realCurrentMK] || {};
+  document.getElementById("cfgMonthLabel").textContent = formatMonthLabel(configMonthKey);
+  document.getElementById("cfgNextBtn").disabled = configMonthKey===realCurrentMK;
+
+  const isPast = configMonthKey !== realCurrentMK;
+  document.getElementById("configNote").textContent = isPast
+    ? "You're editing a past month - saving will ask for confirmation before overwriting it."
+    : "Changes here apply immediately to the current month.";
+  document.getElementById("cfgSubmitBtn").textContent = isPast ? "Save (past month)" : "Save budgets";
+
+  const cur = allBudgets[configMonthKey] || {};
   if(document.activeElement.id !== "cfgRiyaan"){
     document.getElementById("cfgRiyaan").value = cur.riyaan ?? "";
   }
@@ -721,21 +890,26 @@ function renderConfigTab(){
     document.getElementById("cfgDayToDay").value = cur.dayToDay ?? "";
   }
 
-  const pastKeys = Object.keys(allBudgets).filter(k=>k!==realCurrentMK).sort().reverse();
+  const allKeys = Object.keys(allBudgets).sort().reverse();
   const card = document.getElementById("pastBudgetsCard");
-  const emptyEl = document.getElementById("pastBudgetsEmpty");
-  if(pastKeys.length===0){
-    card.innerHTML = '<div class="empty-state" id="pastBudgetsEmpty">No past months yet.</div>';
+  if(allKeys.length===0){
+    card.innerHTML = '<div class="empty-state" id="pastBudgetsEmpty">No budgets set yet.</div>';
     return;
   }
-  card.innerHTML = pastKeys.map(k=>{
+  card.innerHTML = allKeys.map(k=>{
     const b = allBudgets[k];
-    return `<div class="past-budget-row">
-      <span class="m">${formatMonthLabel(k)}</span>
+    const isCurrent = k===realCurrentMK;
+    return `<div class="past-budget-row" style="cursor:pointer;" onclick="window.__editBudgetMonth('${k}')">
+      <span class="m">${formatMonthLabel(k)}${isCurrent ? ' <span class="badge pot-dayToDay">Current</span>' : ''}</span>
       <span class="v">Riyaan ${money(b.riyaan)} &nbsp;|&nbsp; Day-to-day ${money(b.dayToDay)}</span>
     </div>`;
   }).join("");
 }
+window.__editBudgetMonth = function(mk){
+  configMonthKey = mk;
+  renderConfigTab();
+  window.scrollTo({top:document.getElementById("configForm").offsetTop-80,behavior:"smooth"});
+};
 
 /* ---------- Analytics ---------- */
 let charts = {};
@@ -749,9 +923,22 @@ function chartColors(n){
 }
 
 function renderAnalytics(){
-  const tx = txForMonth(viewMonthKey);
-  const spend = spendByPot(viewMonthKey);
-  const budget = allBudgets[viewMonthKey] || {riyaan:0, dayToDay:0};
+  let tx, spend, budget, rangeLabel;
+
+  if(analyticsScope==="ytd"){
+    const fyStart = fyStartKeyFor(viewMonthKey);
+    const months = monthsBetweenInclusive(fyStart, viewMonthKey);
+    tx = txForRange(months);
+    spend = spendByPotForRange(months);
+    budget = budgetForRange(months);
+    rangeLabel = `Year to date: ${formatMonthLabel(fyStart)} - ${formatMonthLabel(viewMonthKey)} (${fyLabel(fyStart)})`;
+  } else {
+    tx = txForMonth(viewMonthKey);
+    spend = spendByPot(viewMonthKey);
+    budget = allBudgets[viewMonthKey] || {riyaan:0, dayToDay:0};
+    rangeLabel = `Showing: ${formatMonthLabel(viewMonthKey)}`;
+  }
+  document.getElementById("scopeRangeLabel").textContent = rangeLabel;
 
   document.getElementById("analyticsBudgetCards").innerHTML =
     budgetCardHTML("riyaan","Riyaan",spend.riyaan,budget.riyaan) +
