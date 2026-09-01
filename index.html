@@ -147,6 +147,8 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
 .badge{display:inline-block;background:var(--blue-surface);color:var(--blue-dark);font-size:11px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap;}
 .badge.pot-riyaan{background:var(--yellow-light);color:var(--yellow-dark);}
 .badge.pot-dayToDay{background:var(--blue-surface);color:var(--blue-dark);}
+.badge.pot-holidays{background:var(--blue-light);color:var(--blue-deep);}
+.badge.pot-exceptionals{background:var(--bg-2);color:var(--text-muted);}
 
 .tx-table-wrap{display:block;}
 .tx-cards{display:none;padding:10px;}
@@ -294,7 +296,7 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
   <!-- CONFIG TAB -->
   <section id="tab-config" class="hidden">
     <div class="section">
-      <div class="section-label">Edit budgets</div>
+      <div class="section-label">Edit monthly budgets</div>
       <div class="card">
         <div class="month-nav" style="display:inline-flex;margin-bottom:16px;">
           <button type="button" id="cfgPrevBtn" aria-label="Previous month">&#8249;</button>
@@ -319,7 +321,32 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
     </div>
 
     <div class="section">
-      <div class="section-label">Backfill historical budgets</div>
+      <div class="section-label">Edit annual budgets</div>
+      <div class="card">
+        <div class="month-nav" style="display:inline-flex;margin-bottom:16px;">
+          <button type="button" id="cfgFYPrevBtn" aria-label="Previous financial year">&#8249;</button>
+          <span id="cfgFYLabel">-</span>
+          <button type="button" id="cfgFYNextBtn" aria-label="Next financial year">&#8250;</button>
+        </div>
+        <form class="entry-form" id="annualConfigForm">
+          <div class="field">
+            <label for="cfgExceptionals">Exceptionals budget (£)</label>
+            <input type="number" id="cfgExceptionals" min="0" step="1" required>
+          </div>
+          <div class="field">
+            <label for="cfgHolidays">Holidays budget (£)</label>
+            <input type="number" id="cfgHolidays" min="0" step="1" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="btn" id="cfgFYSubmitBtn">Save annual budgets</button>
+          </div>
+        </form>
+        <div class="config-note" id="configFYNote">Runs UK financial year, April to March. Changes apply immediately for the current financial year.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Backfill historical monthly budgets</div>
       <div class="card">
         <form class="entry-form" id="backfillForm">
           <div class="field">
@@ -342,7 +369,7 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
             <button type="submit" class="btn secondary">Fill missing months</button>
           </div>
         </form>
-        <div class="config-note">Only fills months in this range that don't already have a budget set - never overwrites an existing month. Use the editor above to change a month that's already set.</div>
+        <div class="config-note">Only fills months in this range that don't already have a budget set - never overwrites an existing month. Use the editor above to change a month that's already set. This applies to the two monthly pots only - set Exceptionals/Holidays directly above.</div>
       </div>
     </div>
 
@@ -350,6 +377,13 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
       <div class="section-label">All months</div>
       <div class="card" id="pastBudgetsCard">
         <div class="empty-state" id="pastBudgetsEmpty">No budgets set yet.</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">All financial years</div>
+      <div class="card" id="pastAnnualBudgetsCard">
+        <div class="empty-state" id="pastAnnualBudgetsEmpty">No annual budgets set yet.</div>
       </div>
     </div>
   </section>
@@ -367,6 +401,12 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
     <div class="section">
       <div class="section-label">Budget vs actual</div>
       <div class="grid-2" id="analyticsBudgetCards"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-label">Annual budgets (financial year to date)</div>
+      <div class="config-note" id="annualRangeLabel" style="margin-bottom:10px;"></div>
+      <div class="grid-2" id="annualBudgetCards"></div>
     </div>
 
     <div class="section">
@@ -392,6 +432,10 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
       <div class="grid-2">
         <div class="card chart-card"><h3 style="font-size:13px;margin-bottom:10px;color:var(--text-muted);">Riyaan</h3><canvas id="catChartRiyaan"></canvas></div>
         <div class="card chart-card"><h3 style="font-size:13px;margin-bottom:10px;color:var(--text-muted);">Day-to-day</h3><canvas id="catChartDayToDay"></canvas></div>
+      </div>
+      <div class="grid-2" style="margin-top:16px;">
+        <div class="card chart-card"><h3 style="font-size:13px;margin-bottom:10px;color:var(--text-muted);">Exceptionals (FY to date)</h3><canvas id="catChartExceptionals"></canvas></div>
+        <div class="card chart-card"><h3 style="font-size:13px;margin-bottom:10px;color:var(--text-muted);">Holidays (FY to date)</h3><canvas id="catChartHolidays"></canvas></div>
       </div>
     </div>
 
@@ -446,7 +490,15 @@ const db = getFirestore(app);
 const CATEGORIES = ["Food & Household","Clothes","Furnishings & Furniture","Going Out","Travel & Parking","Charity","TakeOut","Petrol","Board Games","Other"];
 const ACCOUNTS = ["Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit","Joint","Cash"];
 const PAID_BY = ["Hersh","Sonali"];
-const POTS = [{key:"dayToDay",label:"Day-to-day"},{key:"riyaan",label:"Riyaan"}];
+const POTS = [
+  {key:"dayToDay", label:"Day-to-day", cycle:"monthly"},
+  {key:"riyaan", label:"Riyaan", cycle:"monthly"},
+  {key:"exceptionals", label:"Exceptionals", cycle:"annual"},
+  {key:"holidays", label:"Holidays", cycle:"annual"}
+];
+const MONTHLY_POTS = POTS.filter(p=>p.cycle==="monthly");
+const ANNUAL_POTS = POTS.filter(p=>p.cycle==="annual");
+function potLabel(key){ const p = POTS.find(p=>p.key===key); return p ? p.label : key; }
 
 function pad(n){return String(n).padStart(2,"0");}
 function todayISO(){const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;}
@@ -482,10 +534,12 @@ document.getElementById("fDate").value = todayISO();
 let viewMonthKey = currentRealMonthKey();
 const realCurrentMK = currentRealMonthKey();
 let configMonthKey = realCurrentMK;
+let configFYKey = fyStartKeyFor(realCurrentMK);
 let analyticsScope = "month"; // "month" | "ytd"
 
 let allTransactions = [];      // full live set from Firestore
 let allBudgets = {};           // { monthKey: {riyaan, dayToDay} }
+let allAnnualBudgets = {};     // { fyStartKey: {exceptionals, holidays} }
 let editingId = null;
 let direction = "out";
 let unsubTx = null;
@@ -514,6 +568,12 @@ function listenToData(){
     snap.docs.forEach(d=>{ allBudgets[d.id] = d.data(); });
     renderAll();
   }, (err)=>{ statusLine.textContent = "Data error: "+err.message; statusLine.classList.add("err"); });
+
+  onSnapshot(collection(db,"annualBudgets"), (snap)=>{
+    allAnnualBudgets = {};
+    snap.docs.forEach(d=>{ allAnnualBudgets[d.id] = d.data(); });
+    renderAll();
+  }, (err)=>{ statusLine.textContent = "Data error: "+err.message; statusLine.classList.add("err"); });
 }
 
 function txForMonth(mk){
@@ -522,7 +582,8 @@ function txForMonth(mk){
 
 function spendByPot(mk){
   const tx = txForMonth(mk);
-  const out = {riyaan:0, dayToDay:0};
+  const out = {};
+  POTS.forEach(p=>{ out[p.key]=0; });
   tx.forEach(t=>{
     const sign = t.direction==="out" ? 1 : -1;
     out[t.pot] = (out[t.pot]||0) + sign*Number(t.value);
@@ -540,6 +601,14 @@ function fyLabel(startKey){
   const y = Number(startKey.split("-")[0]);
   return `FY ${y}/${String(y+1).slice(2)}`;
 }
+function fyPrevKey(fyKey){
+  const y = Number(fyKey.split("-")[0]);
+  return `${y-1}-04`;
+}
+function fyNextKey(fyKey){
+  const y = Number(fyKey.split("-")[0]);
+  return `${y+1}-04`;
+}
 function monthsBetweenInclusive(startKey, endKey){
   let [y,m] = startKey.split("-").map(Number);
   const [ey,em] = endKey.split("-").map(Number);
@@ -556,11 +625,11 @@ function txForRange(monthKeys){
   return allTransactions.filter(t=>set.has(t.monthKey));
 }
 function spendByPotForRange(monthKeys){
-  const out = {riyaan:0, dayToDay:0};
+  const out = {};
+  POTS.forEach(p=>{ out[p.key]=0; });
   monthKeys.forEach(mk=>{
     const s = spendByPot(mk);
-    out.riyaan += s.riyaan;
-    out.dayToDay += s.dayToDay;
+    POTS.forEach(p=>{ out[p.key] += s[p.key]||0; });
   });
   return out;
 }
@@ -729,6 +798,38 @@ configForm.addEventListener("submit", async (e)=>{
   }
 });
 
+/* ---------- Config: FY navigation (annual budgets) ---------- */
+const realCurrentFYKey = fyStartKeyFor(realCurrentMK);
+document.getElementById("cfgFYPrevBtn").addEventListener("click", ()=>{
+  configFYKey = fyPrevKey(configFYKey);
+  renderConfigTab();
+});
+document.getElementById("cfgFYNextBtn").addEventListener("click", ()=>{
+  if(configFYKey===realCurrentFYKey) return;
+  configFYKey = fyNextKey(configFYKey);
+  renderConfigTab();
+});
+
+const annualConfigForm = document.getElementById("annualConfigForm");
+annualConfigForm.addEventListener("submit", async (e)=>{
+  e.preventDefault();
+  const exceptionals = parseFloat(document.getElementById("cfgExceptionals").value)||0;
+  const holidays = parseFloat(document.getElementById("cfgHolidays").value)||0;
+  const isPast = configFYKey !== realCurrentFYKey;
+  if(isPast){
+    const ok = confirm(`You're editing annual budgets for ${fyLabel(configFYKey)}, a past financial year. This will overwrite the existing record for that year. Continue?`);
+    if(!ok) return;
+  }
+  try{
+    await setDoc(doc(db,"annualBudgets",configFYKey), {exceptionals, holidays, updatedAt:serverTimestamp()}, {merge:true});
+    statusLine.textContent = "Annual budgets saved for " + fyLabel(configFYKey);
+    statusLine.classList.remove("err");
+  }catch(err){
+    statusLine.textContent = "Save failed: "+err.message;
+    statusLine.classList.add("err");
+  }
+});
+
 /* ---------- Backfill historical budgets ---------- */
 document.getElementById("bfStart").value = "2026-03";
 document.getElementById("bfEnd").value = realCurrentMK;
@@ -810,9 +911,9 @@ function budgetCardHTML(potKey, potLabel, spend, budget){
 function renderBudgetCards(){
   const spend = spendByPot(viewMonthKey);
   const budget = allBudgets[viewMonthKey] || {riyaan:0, dayToDay:0};
-  document.getElementById("budgetCards").innerHTML =
-    budgetCardHTML("riyaan","Riyaan",spend.riyaan,budget.riyaan) +
-    budgetCardHTML("dayToDay","Day-to-day",spend.dayToDay,budget.dayToDay);
+  document.getElementById("budgetCards").innerHTML = MONTHLY_POTS.map(p=>
+    budgetCardHTML(p.key, p.label, spend[p.key], budget[p.key])
+  ).join("");
 }
 
 function renderTxTable(){
@@ -828,11 +929,11 @@ function renderTxTable(){
   }
   empty.classList.add("hidden");
   body.innerHTML = tx.map(t=>{
-    const potLabel = t.pot==="riyaan" ? "Riyaan" : "Day-to-day";
+    const potLbl = potLabel(t.pot);
     return `<tr>
       <td>${formatDateUK(t.date)}</td>
       <td>${escapeHtml(t.retailer)}</td>
-      <td><span class="badge pot-${t.pot}">${potLabel}</span></td>
+      <td><span class="badge pot-${t.pot}">${potLbl}</span></td>
       <td>${escapeHtml(t.category)}</td>
       <td>${escapeHtml(t.account)}</td>
       <td>${escapeHtml(t.paidBy)}</td>
@@ -845,14 +946,14 @@ function renderTxTable(){
   }).join("");
 
   cardsList.innerHTML = tx.map(t=>{
-    const potLabel = t.pot==="riyaan" ? "Riyaan" : "Day-to-day";
+    const potLbl = potLabel(t.pot);
     return `<div class="tx-card">
       <div class="tx-card-top">
         <span class="tx-card-retailer">${escapeHtml(t.retailer)}</span>
         <span class="tx-card-value ${t.direction}">${t.direction==="out"?"-":"+"}${money(t.value)}</span>
       </div>
       <div class="tx-card-meta">
-        <span class="badge pot-${t.pot}">${potLabel}</span>
+        <span class="badge pot-${t.pot}">${potLbl}</span>
         <span>${escapeHtml(t.category)}</span>
         <span>${escapeHtml(t.account)}</span>
         <span>${escapeHtml(t.paidBy)}</span>
@@ -894,21 +995,58 @@ function renderConfigTab(){
   const card = document.getElementById("pastBudgetsCard");
   if(allKeys.length===0){
     card.innerHTML = '<div class="empty-state" id="pastBudgetsEmpty">No budgets set yet.</div>';
-    return;
+  } else {
+    card.innerHTML = allKeys.map(k=>{
+      const b = allBudgets[k];
+      const isCurrent = k===realCurrentMK;
+      return `<div class="past-budget-row" style="cursor:pointer;" onclick="window.__editBudgetMonth('${k}')">
+        <span class="m">${formatMonthLabel(k)}${isCurrent ? ' <span class="badge pot-dayToDay">Current</span>' : ''}</span>
+        <span class="v">Riyaan ${money(b.riyaan)} &nbsp;|&nbsp; Day-to-day ${money(b.dayToDay)}</span>
+      </div>`;
+    }).join("");
   }
-  card.innerHTML = allKeys.map(k=>{
-    const b = allBudgets[k];
-    const isCurrent = k===realCurrentMK;
-    return `<div class="past-budget-row" style="cursor:pointer;" onclick="window.__editBudgetMonth('${k}')">
-      <span class="m">${formatMonthLabel(k)}${isCurrent ? ' <span class="badge pot-dayToDay">Current</span>' : ''}</span>
-      <span class="v">Riyaan ${money(b.riyaan)} &nbsp;|&nbsp; Day-to-day ${money(b.dayToDay)}</span>
-    </div>`;
-  }).join("");
+
+  /* Annual budget editor */
+  document.getElementById("cfgFYLabel").textContent = fyLabel(configFYKey);
+  document.getElementById("cfgFYNextBtn").disabled = configFYKey===realCurrentFYKey;
+  const isPastFY = configFYKey !== realCurrentFYKey;
+  document.getElementById("configFYNote").textContent = isPastFY
+    ? "You're editing a past financial year - saving will ask for confirmation before overwriting it."
+    : "Runs UK financial year, April to March. Changes apply immediately for the current financial year.";
+  document.getElementById("cfgFYSubmitBtn").textContent = isPastFY ? "Save (past FY)" : "Save annual budgets";
+
+  const curFY = allAnnualBudgets[configFYKey] || {};
+  if(document.activeElement.id !== "cfgExceptionals"){
+    document.getElementById("cfgExceptionals").value = curFY.exceptionals ?? "";
+  }
+  if(document.activeElement.id !== "cfgHolidays"){
+    document.getElementById("cfgHolidays").value = curFY.holidays ?? "";
+  }
+
+  const allFYKeys = Object.keys(allAnnualBudgets).sort().reverse();
+  const fyCard = document.getElementById("pastAnnualBudgetsCard");
+  if(allFYKeys.length===0){
+    fyCard.innerHTML = '<div class="empty-state" id="pastAnnualBudgetsEmpty">No annual budgets set yet.</div>';
+  } else {
+    fyCard.innerHTML = allFYKeys.map(k=>{
+      const b = allAnnualBudgets[k];
+      const isCurrent = k===realCurrentFYKey;
+      return `<div class="past-budget-row" style="cursor:pointer;" onclick="window.__editAnnualBudget('${k}')">
+        <span class="m">${fyLabel(k)}${isCurrent ? ' <span class="badge pot-dayToDay">Current</span>' : ''}</span>
+        <span class="v">Exceptionals ${money(b.exceptionals)} &nbsp;|&nbsp; Holidays ${money(b.holidays)}</span>
+      </div>`;
+    }).join("");
+  }
 }
 window.__editBudgetMonth = function(mk){
   configMonthKey = mk;
   renderConfigTab();
   window.scrollTo({top:document.getElementById("configForm").offsetTop-80,behavior:"smooth"});
+};
+window.__editAnnualBudget = function(fyKey){
+  configFYKey = fyKey;
+  renderConfigTab();
+  window.scrollTo({top:document.getElementById("annualConfigForm").offsetTop-80,behavior:"smooth"});
 };
 
 /* ---------- Analytics ---------- */
@@ -944,6 +1082,18 @@ function renderAnalytics(){
     budgetCardHTML("riyaan","Riyaan",spend.riyaan,budget.riyaan) +
     budgetCardHTML("dayToDay","Day-to-day",spend.dayToDay,budget.dayToDay);
 
+  // Annual pots (Exceptionals, Holidays) - always financial-year-to-date, independent of the scope toggle
+  const annualFYStart = fyStartKeyFor(viewMonthKey);
+  const annualMonths = monthsBetweenInclusive(annualFYStart, viewMonthKey);
+  const annualTx = txForRange(annualMonths);
+  const annualSpend = spendByPotForRange(annualMonths);
+  const annualBudgetVals = allAnnualBudgets[annualFYStart] || {exceptionals:0, holidays:0};
+  document.getElementById("annualRangeLabel").textContent =
+    `${formatMonthLabel(annualFYStart)} - ${formatMonthLabel(viewMonthKey)} (${fyLabel(annualFYStart)})`;
+  document.getElementById("annualBudgetCards").innerHTML =
+    budgetCardHTML("exceptionals","Exceptionals",annualSpend.exceptionals,annualBudgetVals.exceptionals) +
+    budgetCardHTML("holidays","Holidays",annualSpend.holidays,annualBudgetVals.holidays);
+
   const totalOut = tx.filter(t=>t.direction==="out").reduce((s,t)=>s+Number(t.value),0);
   const totalIn = tx.filter(t=>t.direction==="in").reduce((s,t)=>s+Number(t.value),0);
   document.getElementById("kpiOut").textContent = money(totalOut);
@@ -952,9 +1102,15 @@ function renderAnalytics(){
   netEl.textContent = money(totalOut-totalIn);
   netEl.className = "kpi-value";
 
-  ["riyaan","dayToDay"].forEach(pot=>{
-    const canvasId = pot==="riyaan" ? "catChartRiyaan" : "catChartDayToDay";
-    const potTx = tx.filter(t=>t.pot===pot && t.direction==="out");
+  // Category breakdown - monthly pots use the scope-selected tx, annual pots always use FY-to-date tx
+  const catChartSources = [
+    {pot:"riyaan", canvasId:"catChartRiyaan", source:tx},
+    {pot:"dayToDay", canvasId:"catChartDayToDay", source:tx},
+    {pot:"exceptionals", canvasId:"catChartExceptionals", source:annualTx},
+    {pot:"holidays", canvasId:"catChartHolidays", source:annualTx}
+  ];
+  catChartSources.forEach(({pot, canvasId, source})=>{
+    const potTx = source.filter(t=>t.pot===pot && t.direction==="out");
     const totals = {};
     potTx.forEach(t=>{ totals[t.category]=(totals[t.category]||0)+Number(t.value); });
     const labels = Object.keys(totals);
