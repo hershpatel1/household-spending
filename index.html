@@ -407,6 +407,28 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
       <div class="section-label">Annual budgets (financial year to date)</div>
       <div class="config-note" id="annualRangeLabel" style="margin-bottom:10px;"></div>
       <div class="grid-2" id="annualBudgetCards"></div>
+      <div class="grid-2" style="margin-top:16px;">
+        <div>
+          <h3 style="font-size:13px;margin-bottom:8px;color:var(--text-muted);">Exceptionals - transactions</h3>
+          <div class="card" style="padding:0;overflow-x:auto;">
+            <table>
+              <thead><tr><th>Date</th><th>Vendor</th><th class="num">Value</th></tr></thead>
+              <tbody id="exceptionalsTxBody"></tbody>
+            </table>
+            <div class="empty-state hidden" id="exceptionalsTxEmpty">No transactions yet this financial year.</div>
+          </div>
+        </div>
+        <div>
+          <h3 style="font-size:13px;margin-bottom:8px;color:var(--text-muted);">Holidays - transactions</h3>
+          <div class="card" style="padding:0;overflow-x:auto;">
+            <table>
+              <thead><tr><th>Date</th><th>Vendor</th><th class="num">Value</th></tr></thead>
+              <tbody id="holidaysTxBody"></tbody>
+            </table>
+            <div class="empty-state hidden" id="holidaysTxEmpty">No transactions yet this financial year.</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="section">
@@ -908,6 +930,23 @@ function budgetCardHTML(potKey, potLabel, spend, budget){
   </div>`;
 }
 
+function renderPotTxList(potKey, tbodyId, emptyId, sourceTx){
+  const rows = sourceTx.filter(t=>t.pot===potKey).slice().sort((a,b)=> b.date.localeCompare(a.date));
+  const body = document.getElementById(tbodyId);
+  const empty = document.getElementById(emptyId);
+  if(rows.length===0){
+    body.innerHTML = "";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  body.innerHTML = rows.map(t=>`<tr>
+    <td>${formatDateUK(t.date)}</td>
+    <td>${escapeHtml(t.retailer)}</td>
+    <td class="num ${t.direction}">${t.direction==="out"?"-":"+"}${money(t.value)}</td>
+  </tr>`).join("");
+}
+
 function renderBudgetCards(){
   const spend = spendByPot(viewMonthKey);
   const budget = allBudgets[viewMonthKey] || {riyaan:0, dayToDay:0};
@@ -1093,6 +1132,9 @@ function renderAnalytics(){
   document.getElementById("annualBudgetCards").innerHTML =
     budgetCardHTML("exceptionals","Exceptionals",annualSpend.exceptionals,annualBudgetVals.exceptionals) +
     budgetCardHTML("holidays","Holidays",annualSpend.holidays,annualBudgetVals.holidays);
+
+  renderPotTxList("exceptionals", "exceptionalsTxBody", "exceptionalsTxEmpty", annualTx);
+  renderPotTxList("holidays", "holidaysTxBody", "holidaysTxEmpty", annualTx);
 
   const totalOut = tx.filter(t=>t.direction==="out").reduce((s,t)=>s+Number(t.value),0);
   const totalIn = tx.filter(t=>t.direction==="in").reduce((s,t)=>s+Number(t.value),0);
