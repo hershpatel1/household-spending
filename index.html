@@ -263,7 +263,8 @@ tfoot td{background:var(--blue-deep);color:#fff;font-weight:700;padding:10px 12p
           </div>
           <div class="field full">
             <label for="fRetailer">Retailer</label>
-            <input type="text" id="fRetailer" placeholder="e.g. Next, Tesco" required>
+            <input type="text" id="fRetailer" placeholder="e.g. Next, Tesco" list="retailerList" autocomplete="off" required>
+            <datalist id="retailerList"></datalist>
           </div>
           <div class="form-actions">
             <button type="button" class="btn secondary hidden" id="cancelEditBtn">Cancel edit</button>
@@ -911,7 +912,21 @@ function renderAll(){
   renderBudgetCards();
   renderTxTable();
   renderConfigTab();
+  renderRetailerDatalist();
   if(!document.getElementById("tab-analytics").classList.contains("hidden")) renderAnalytics();
+}
+
+function renderRetailerDatalist(){
+  const seen = {};
+  allTransactions.forEach(t=>{
+    if(!t.retailer) return;
+    const trimmed = t.retailer.trim();
+    if(!trimmed) return;
+    const key = trimmed.toLowerCase();
+    seen[key] = trimmed; // dedupe case-insensitively, keep latest-seen casing
+  });
+  const names = Object.values(seen).sort((a,b)=>a.localeCompare(b));
+  document.getElementById("retailerList").innerHTML = names.map(n=>`<option value="${escapeHtml(n)}"></option>`).join("");
 }
 
 function budgetCardHTML(potKey, potLabel, spend, budget){
