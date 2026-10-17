@@ -886,9 +886,19 @@ function recommendations(mid){
   return out;
 }
 async function addRecToPlan(r){
+  const nm=r.kind==="isa"?"One-off S&S ISA top-up":r.kind==="overpay"?"One-off mortgage overpayment":"Rebalance transfer";
+  const dup=PLAN.filter(p=>p.freq==="oneoff"&&p.name===nm&&p.start>=curMK()&&(!p.end||p.end>=p.start));
+  if(dup.length&&!confirm(`You already have ${dup.length===1?"a "+nm.toLowerCase():dup.length+" of these"} planned (${dup.map(p=>money0(p.amount)+" in "+shortMonth(p.start)).join(", ")}). Add another ${money0(r.amount)}?`))return;
   const ref=doc(collection(db,"plan_items"));
   await setDoc(ref,{name:r.kind==="isa"?"One-off S&S ISA top-up":r.kind==="overpay"?"One-off mortgage overpayment":"Rebalance transfer",account:r.from,kind:"transfer",to:r.to,amount:r.amount,day:10,basis:"fixed",freq:"oneoff",months:[],start:r.mk,end:"",status:"confirmed",manual:true,note:r.why,series:ref.id,createdAt:serverTimestamp()});
-  setStatus("Added to Plan for "+shortMonth(r.mk));
+  setStatus("Added to Plan for "+shortMonth(r.mk)+". The forecast now includes it.");
+}
+async function resavePlan(){
+  const why=prompt("Re-save the plan from Plan as it stands now? Progress will be measured against the new version from here on. Why are you re-planning?","");if(!why)return;
+  try{const f=forecast(true),rows={};f.rows.forEach(r=>rows[r.mk]={float:r.float,joint:r.joint,isaTot:r.isaTot,penTot:r.penTot,mort:r.mort,nw:r.nw,isas:r.isas});
+    const b=writeBatch(db);if(BASELINE&&BASELINE.rows)b.set(doc(db,"v2meta","baseline_"+Date.now()),{...BASELINE,archivedAt:serverTimestamp()});
+    b.set(doc(db,"v2meta","baseline"),{name:"Plan re-saved "+new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short",year:"numeric"}),v:BASELINE_V,createdAt:serverTimestamp(),horizon:S.horizon,rows,reason:why});
+    await b.commit();setStatus("Plan re-saved");}catch(e){fail(e);}
 }
 function lineChart(series,labels,opts={}){
   const W=360,H=170,P={l:44,r:8,t:10,b:22},all=series.flatMap(s=>s.vals.filter(v=>v!=null)).concat(opts.floor!=null?[opts.floor]:[]);
@@ -915,7 +925,7 @@ function renderPlanForecast(){
   let budgetVar=0,incomeVar=0;closedList().forEach(m=>{const mk=m.id,tx=TX.filter(t=>t.monthKey===mk);["dayToDay","riyaan"].forEach(k=>budgetVar+=monthBudget(k,mk)-potSpend(tx,k));
     Object.entries(m.items||{}).forEach(([k,it])=>{const p=PLAN.find(x=>x.id===k.split("@")[0]);if(p&&p.kind==="in"&&it.amount!=null)incomeVar+=Number(it.amount)-Number(p.amount);});});
   const recs=recommendations(currentMEId());
-  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Every pot, month by month, to July 2030 (the end of the residential fix, when the mortgage is repriced). The dashed lines are the 17 October plan. Refreshes whenever you log, close a month or change the plan.</div>
+  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Every pot, month by month, to July 2030 (the end of the residential fix, when the mortgage is repriced). The dashed lines are the saved plan (${esc(BASELINE&&BASELINE.name||"17 October 2026 plan")}). Refreshes whenever you log, close a month or change the plan.</div>
   ${fold("fc-2030","July 2030: on course?",B?`Net worth ${money0(end.nw)} vs plan ${money0(be.nw)}`:"Saving the 17 October plan...",B?vsPlan(end.nw,be.nw).chip:"",true,
     `${line("Net worth (excluding the house)",end.nw,be?.nw)}${line("Mortgage left",end.mort,be?.mort,false)}${line("ISAs",end.isaTot,be?.isaTot)}${line("Pensions",end.penTot,be?.penTot)}${line("Float (Hersh + Sonali)",end.float,be?.float)}${line("Joint",end.joint,be?.joint)}
      ${lc&&lcRow?`<div class="eyebrow" style="margin-top:12px;">So far, at the ${monthLabel(lc.id)} month-end</div><div class="calc"><span>Float vs plan</span><span class="num">${money(lc.float-lcRow.float,true)}</span><span>Day-to-day and Riyaan under (+) or over (-) budget</span><span class="num">${money(budgetVar,true)}</span><span>Pay vs plan</span><span class="num">${money(incomeVar,true)}</span><span>ISAs vs plan (includes market moves)</span><span class="num">${money(Object.values(lc.isas||{}).reduce((s,v)=>s+Number(v||0),0)-lcRow.isaTot,true)}</span></div>`:`<div class="note" style="margin-top:8px;">After your first month-end this also shows where you are against the plan today and why: spending against budget, pay against plan, and market moves on the ISAs.</div>`}`)}
@@ -926,6 +936,7 @@ function renderPlanForecast(){
     const gaps=[];let prev=0;rows.forEach(r=>{const b=B[r.mk];if(!b)return;const g=r.float-b.float;if(Math.abs(g-prev)>=250)gaps.push({mk:r.mk,step:g-prev,g});prev=g;});
     return fold("fc-diff","What's different from the plan",ch.length?`${ch.length} change${ch.length>1?"s":""} since it was saved`:"No changes since it was saved",ch.length?`<span class="chip warn">${ch.length}</span>`:"",false,
      `${ch.length?`<div class="eyebrow">Changes since the plan was saved</div>${ch.map(c=>`<div class="li"><div><div class="t" style="font-weight:400;">${c.t}</div><div class="d">${c.d}</div></div></div>`).join("")}`:`<div class="note">Nothing in Plan has been added or changed since the plan was saved.</div>`}
+      <div class="actions-row"><button class="btn ghost sm" id="resavePlan">Re-save the plan from today's Plan</button></div><div class="note small">Only when you deliberately re-plan, for example at the April review. The old version is kept.</div>
       ${gaps.length?`<div class="eyebrow" style="margin-top:12px;">Where the float moves away from the plan</div><div class="calc">${gaps.slice(0,12).map(x=>`<span>${monthLabel(x.mk)}</span><span class="num">${money(x.step,true)} (gap ${money(x.g,true)})</span>`).join("")}</div>`:""}`);})()}
   ${recs.length?fold("fc-recs","Recommended moves",`${recs.length} from the forecast`,`<span class="chip warn">${recs.length}</span>`,true,recs.map((r,i)=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(r.text)}</div><div class="d">${esc(r.why)}</div><div class="row-btns"><button class="btn sm" data-rec="${i}">Add to Plan for ${shortMonth(r.mk)}</button></div></div></div>`).join("")):""}
   ${fold("fc-float","Float",`Lowest ${money0(low.float)} in ${shortMonth(low.mk)}`,low.float<S.floor?`<span class="chip warn">Below floor</span>`:`<span class="chip ok">Above floor</span>`,true,lineChart([{name:"Forecast",vals:rows.map(r=>r.float),color:"#1D3461"},{name:"Plan",vals:pl("float"),color:"#6B7280",dash:"5 4",w:1.5},{name:"Joint",vals:rows.map(r=>r.joint),color:"#8FA3C8",w:1.5}],lab,{floor:S.floor,label:"Float forecast"}))}
@@ -942,6 +953,7 @@ function renderPlanForecast(){
      <span>Sonali Imagination pension (gross a month)</span><span class="num">${money0(86000/12*0.05)} employer (assumed), + ${money0(86000/12*0.05)} sacrifice from Jan 27</span>
      <span>Household Investment</span><span class="num">Not forecast; spare Joint cash</span></div>
      <div class="note" style="margin-top:8px;">Planning assumptions, not predictions. If you move a cash ISA into a new fixed deal, tell me the rate and I'll update it.</div>`)}`;
+  $("resavePlan")&&($("resavePlan").onclick=resavePlan);
   $$("[data-rec]").forEach(b=>b.onclick=async()=>{try{await addRecToPlan(recs[+b.dataset.rec]);}catch(e){fail(e);}});
 }
 
