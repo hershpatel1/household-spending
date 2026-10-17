@@ -238,7 +238,7 @@ const S={floor:10000,personTarget:5000,aniTarget:99000,mortgageRate:0.0384,sacSt
   // workplace pensions: gross monthly = salary/12 x (employer + employee sacrifice)
   workplace:[{pot:"Hersh CIP workplace",salary:115000,er:0.06,ee:0.03,eeFrom:"2026-12",from:"2026-10"},{pot:"Sonali Imagination workplace",salary:86000,er:0.05,ee:0.05,eeFrom:"2027-01",from:"2027-01",note:"Employer share assumed 5% until the offer letter"}],
   rebalanceMonths:[1,4,7,10]};
-const SEED_VERSION=3;
+const SEED_VERSION=4;
 
 /* ================= helpers ================= */
 const $=id=>document.getElementById(id), $$=s=>document.querySelectorAll(s);
@@ -390,16 +390,16 @@ function seedActions(){
     A("a-review30",{dueDate:"2030-01-15",owner:"Either",text:"Goals review and remortgage preparation",reason:"Resi fix ends Jul 2030; flat fix ends 31 Jan 2030"})
   ];
 }
-const SEED_OPENING={asAt:"2026-10-17",
-  balances:{"Joint":3618.17,"Hersh Debit":23050.34,"Hersh Credit":-1690.85,"Sonali Debit":7815.24,"Sonali Credit":-251.82},
+const SEED_OPENING={asAt:"2026-10-16",
+  balances:{"Joint":4125.10,"Hersh Debit":22612.12,"Hersh Credit":-1690.85,"Sonali Debit":7815.24,"Sonali Credit":-251.82},
   mortgage:458898.72,
   isas:{"Hersh Cash ISA":40738.76,"Sonali Cash ISA":40365.69,"Sonali S&S ISA":6320,"Hersh S&S ISA":0},
   pensions:{"Hersh Scottish Widows":104293.72,"Hersh LifeSight":10000,"Sonali Scottish Widows":71356.03},
-  pensionsAt:"2026-10-17",
-  note:"Excel figures less today's two Joint to Hersh transfers (£299 furniture, £207.93 wall art). The £243.08 water payment was still pending on Joint."};
+  pensionsAt:"2026-10-17",setup:true,
+  note:"Bank balances before the 17 Oct movements (Hersh current corrected to £22,612.12). The first month-end counts the £299 furniture refund (Joint to Hersh), the £207.39 wall art (Joint, Household Investment) and the pending water £243.08 and road tax £640."};
 const SEED_TX=[
   {id:"seed-tx-furniture",date:"2026-10-17",account:"Joint",toAccount:"Hersh Debit",value:299,retailer:"Furniture refund (should have come from Joint)"},
-  {id:"seed-tx-wallart",date:"2026-10-17",account:"Joint",toAccount:"Hersh Debit",value:207.93,retailer:"Wall art installation"}
+  {id:"seed-tx-wallart",date:"2026-10-17",account:"Joint",value:207.39,retailer:"Wall art installation",spend:true}
 ];
 const SEED_RULES=[
   {id:"r-d2d",pot:"dayToDay",amount:650,from:"2026-10"},{id:"r-riyaan",pot:"riyaan",amount:300,from:"2026-10"},
@@ -409,6 +409,12 @@ async function ensureSeed(){
   const ref=doc(db,"v2meta","seed"), snap=await getDoc(ref);
   if(snap.exists()&&(snap.data().version||0)>=SEED_VERSION)return;
   const b=writeBatch(db), ts=serverTimestamp();
+  if(snap.exists()&&(snap.data().version||0)===3){
+    b.set(doc(db,"v2meta","opening"),{asAt:"2026-10-16",balances:{"Joint":4125.10,"Hersh Debit":22612.12},note:SEED_OPENING.note,setup:true},{merge:true});
+    b.set(doc(db,"transactions","seed-tx-wallart"),{value:207.39,type:"spend",direction:"out",pot:"householdInvestment",category:"Furnishings & Furniture",toAccount:null,preOpening:false,updatedAt:ts},{merge:true});
+    b.set(doc(db,"transactions","seed-tx-furniture"),{preOpening:false,updatedAt:ts},{merge:true});
+    b.set(ref,{version:SEED_VERSION,at:ts});await b.commit();return;
+  }
   if(snap.exists()&&(snap.data().version||0)===2){ // upgrade only what changed, keep everything else as the users left it
     ["a-so-hs","a-so-hj","a-so-sj"].forEach(id=>b.set(doc(db,"actions",id),{status:"done",doneOn:"2026-10-17"},{merge:true}));
     const c=seedActions().find(a=>a.id==="a-so-hs-cancel");const{id,...r}=c;b.set(doc(db,"actions",id),{...r,createdAt:ts},{merge:true});
@@ -419,7 +425,7 @@ async function ensureSeed(){
   seedActions().forEach(({id,...r})=>b.set(doc(db,"actions",id),{...r,createdAt:ts},{merge:true}));
   SEED_RULES.forEach(({id,...r})=>b.set(doc(db,"budget_rules",id),r,{merge:true}));
   // transfers recorded for history: they happened before the opening balances, so they sit before the first month-end window
-  SEED_TX.forEach(({id,...r})=>b.set(doc(db,"transactions",id),{...r,monthKey:"2026-10",type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:"Hersh",preOpening:true,createdAt:ts},{merge:true}));
+  SEED_TX.forEach(({id,spend,...r})=>b.set(doc(db,"transactions",id),spend?{...r,monthKey:"2026-10",type:"spend",direction:"out",pot:"householdInvestment",category:"Furnishings & Furniture",paidBy:"Hersh",toAccount:null,createdAt:ts}:{...r,monthKey:"2026-10",type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:"Hersh",createdAt:ts},{merge:true}));
   b.set(doc(db,"v2meta","opening"),SEED_OPENING);
   b.set(ref,{version:SEED_VERSION,at:ts});
   await b.commit();
@@ -547,8 +553,8 @@ function renderHome(){
   $("v-home").innerHTML=`
   <div class="section"><div class="card">
     <div class="acc-h"><div class="eyebrow" style="margin:0;">Month-end · ${monthLabel(mid)}</div>${ME[mid]?.status==="open"?`<span class="chip warn">In progress</span>`:""}</div>
-    <div class="note">${meDue?`${monthLabel(mid)} is ready to close once last month's pending transactions have cleared.`:`Opens on 1 ${shortMonth(addMonths(mid,1))}. Keep logging until then.`}</div>
-    <div class="actions-row"><button class="btn${meDue?" accent":" ghost"}" data-go="me">${ME[mid]?.status==="open"?"Continue month-end":"Start month-end"}</button></div>
+    <div class="note">${setupPending()?(meDue?`Set your opening balances: read each one from your banking apps once. ${monthLabel(mid)} isn't reconciled; your first full month-end is ${monthLabel(addMonths(mid,1))}.`:`From 1 ${shortMonth(addMonths(mid,1))} you set your opening balances once, read from your banking apps. ${monthLabel(mid)} isn't reconciled. Keep logging until then.`):meDue?`${monthLabel(mid)} is ready to close once last month's pending transactions have cleared.`:`Opens on 1 ${shortMonth(addMonths(mid,1))}. Keep logging until then.`}</div>
+    <div class="actions-row"><button class="btn${meDue?" accent":" ghost"}" data-go="me">${setupPending()?"Set opening balances":ME[mid]?.status==="open"?"Continue month-end":"Start month-end"}</button></div>
   </div></div>
   <div class="section"><div class="grid-2">
     <div class="card"><div class="eyebrow">Float</div><div class="kpi num">${money0(fl)}</div><div class="small muted">Hersh and Sonali current accounts less cards, at ${dateShort(flDate)}. Floor £10,000.</div>${(()=>{if(!BASELINE||!BASELINE.rows)return"";const f=liveForecast(),e=f.rows[f.rows.length-1],b=BASELINE.rows[S.horizon];return b?`<div class="small" style="margin-top:8px;">July 2030 net worth ${money0(e.nw)} ${vsPlan(e.nw,b.nw).chip}</div>`:"";})()}</div>
@@ -864,7 +870,8 @@ function forecast(fromOpening){
       if(p.kind==="in")unitAdd(p.account,v);else{unitAdd(p.account,-v);if(p.kind==="transfer")dest(p.to,v,p.account);}
       if(p.role==="mortgage")mort-=v;});
     // what has actually happened since the start point (live forecast only)
-    if(!fromOpening)TX.filter(t=>!t.preOpening&&t.date>prevEnd&&t.date<=end&&t.date<=today).forEach(t=>{
+    // the saved plan includes the movements already known at opening (the seeded 17 Oct entries); the live forecast includes everything logged
+    TX.filter(t=>(!fromOpening||String(t.id).startsWith("seed-tx-"))&&!t.preOpening&&t.date>prevEnd&&t.date<=end&&t.date<=today).forEach(t=>{
       if(t.type==="transfer"){if(ISAS.includes(t.account))isas[t.account]-=t.value;else unitAdd(t.account,-t.value);dest(t.toAccount,t.value,t.account);}
       else unitAdd(t.account,t.direction==="in"?t.value:-t.value);});
     // planned one-offs
@@ -1028,7 +1035,57 @@ function nextMoves(mid){
   PLANNED.filter(x=>x.status==="planned"&&x.date>=a+"-01"&&x.date<=b+"-31").forEach(x=>out.push({id:`nm-pp-${x.id}`,text:`One-off: ${x.description} ${money(x.amount)} from ${x.account}`,dueDate:x.date,amount:x.amount}));
   return out.sort((x,y)=>x.dueDate.localeCompare(y.dueDate));
 }
+const setupPending=()=>!!(OPENING&&OPENING.setup)&&!lastClose();
+function renderSetupME(mid){
+  const m=ME[mid]||{},runDate=m.runDate||todayISO(),bal=m.balances||{},v=x=>x==null?"":x;
+  const fields=[["Joint","Joint"],["Hersh Debit","Hersh current account"],["Hersh Credit","Hersh credit card (owed)"],["Sonali Debit","Sonali current account"],["Sonali Credit","Sonali credit card (owed)"]];
+  const entered=fields.every(([k])=>bal[k]!=null&&bal[k]!=="");
+  const fl=entered?float(bal):null;
+  const ps=m.payslip||{},who=PEOPLE[0],ani=aniCalc(mid,ps,who);
+  $("v-me").innerHTML=`
+  <div class="card" style="margin-bottom:14px;"><div class="acc-h"><h2 style="font-size:24px;">Set opening balances</h2>${entered?`<span class="chip ok">Ready</span>`:`<span class="chip warn">To enter</span>`}</div>
+   <div class="note">A one-off start. Read each balance from your banking apps today and type it in. ${monthLabel(mid)} isn't reconciled; from here everything is either logged, in Plan, or asked for at month-end, so your first full month-end (${monthLabel(addMonths(mid,1))}) ties out to £0.00.</div>
+   <label class="f" style="margin-top:10px;max-width:220px;">Balances as at<input type="date" id="meRun" value="${runDate}"></label></div>
+  ${fold(`me-${mid}-setup-cur`,"1. Current accounts and cards","As your banking apps show them now",entered?`<span class="chip ok">Done</span>`:`<span class="chip warn">To enter</span>`,!entered,
+    `<div class="form-grid">${fields.map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" inputmode="decimal" data-mebal="${k}" value="${bal[k]!=null?(CARDS.includes(k)?-bal[k]:bal[k]):""}"></label>`).join("")}</div>
+    ${fl!=null?`<div class="calc"><span>Float (Hersh and Sonali current accounts less cards)</span><span class="num tot">${money(fl)}</span></div>`:""}
+    <div class="note small" style="margin-top:8px;">Use the balance including anything still pending, so pending payments don't need chasing later. If your app shows pending items separately, take them off.</div>`)}
+  ${fold(`me-${mid}-setup-inv`,"2. Mortgage, ISAs and pensions","Optional; leave a box empty to keep the figure from 17 October","",false,
+    `<div class="li"><div style="flex:1;"><div class="t">Mortgage (Nationwide)</div><div class="d">17 Oct ${money((OPENING||SEED_OPENING).mortgage)}</div></div><div class="r"><input type="number" step="0.01" data-memort="close" value="${v(m.mortgage?.close)}" placeholder="Balance" style="width:130px;"></div></div>
+    ${ISAS.map(k=>`<div class="li"><div style="flex:1;"><div class="t">${k}</div><div class="d">17 Oct ${money((OPENING||SEED_OPENING).isas?.[k]||0)}</div></div><div class="r"><input type="number" step="0.01" data-meisa="${k}" value="${v(m.isas?.[k])}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}
+    ${PENSIONS.map(k=>`<div class="li"><div style="flex:1;"><div class="t">${k}</div><div class="d">17 Oct ${(OPENING||SEED_OPENING).pensions?.[k]!=null?money((OPENING||SEED_OPENING).pensions[k]):"not set"}</div></div><div class="r"><input type="number" step="0.01" data-mepen="${k}" value="${v(m.pensions?.[k])}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}`)}
+  ${fold(`me-${mid}-setup-ps`,"3. Hersh's payslip (optional)",`${shortMonth(mid)} payslip, for the £99,000 test`,ps.ytd!=null?`<span class="chip ok">Done</span>`:`<span class="chip grey">Optional</span>`,false,
+    `<div class="form-grid">${[["ytd","Taxable pay to date"],["period","Taxable pay this period"],["net","Net pay"]].map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" data-meps="${k}" data-who="hersh" value="${v(ps[k])}"></label>`).join("")}</div>
+    ${ps.ytd&&ps.period?`<div class="calc"><span>Projected adjusted net income</span><span class="num tot">${money(ani.proj)}</span><span>Still to pay into the personal pension (cash)</span><span class="num">${money(ani.cash)}</span></div>`:""}`)}
+  <div class="card"><div class="eyebrow">Start</div><div class="note">Saves these as your opening balances, re-saves the plan from them, and adds next month's moves to your actions.</div>
+   <div class="actions-row"><button class="btn accent" id="meSetup" ${entered?"":"disabled"}>Set opening balances</button></div></div>`;
+  const num=x=>x===""?null:parseFloat(x);
+  $("meRun").onchange=e=>meSave(mid,{runDate:e.target.value});
+  $$("[data-mebal]").forEach(i=>i.addEventListener("change",()=>{const a=i.dataset.mebal;let x=num(i.value);if(x!=null&&CARDS.includes(a))x=-Math.abs(x);meSave(mid,{runDate,balances:{[a]:x}});}));
+  $$("[data-memort]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{mortgage:{close:num(i.value)}})));
+  $$("[data-meisa]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{isas:{[i.dataset.meisa]:num(i.value)}})));
+  $$("[data-mepen]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{pensions:{[i.dataset.mepen]:num(i.value)}})));
+  $$("[data-meps]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{payslip:{[i.dataset.meps]:num(i.value)}})));
+  $("meSetup").onclick=async()=>{
+    const who=prompt("Setting opening balances. Who is doing this? (Hersh or Sonali)","Hersh");if(!who)return;
+    const o=OPENING||SEED_OPENING,keep=(cur,old)=>{const out={...(old||{})};Object.entries(cur||{}).forEach(([k,x])=>{if(x!=null&&x!=="")out[k]=Number(x);});return out;};
+    const isas=keep(m.isas,o.isas),pens=keep(m.pensions,o.pensions),mort=m.mortgage?.close!=null&&m.mortgage.close!==""?Number(m.mortgage.close):o.mortgage;
+    const pensionsUpdated=Object.values(m.pensions||{}).some(x=>x!=null&&x!=="");
+    try{const b=writeBatch(db);
+      b.set(doc(db,"v2meta","opening"),{asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,setup:false,setBy:who,setAt:serverTimestamp(),note:"Opening balances set from the banking apps at the first month-end"});
+      b.set(doc(db,"month_ends",mid),{status:"closed",setup:true,runDate,balances:{...bal},mortgage:{close:mort},isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,float:r2(float(bal)),closedBy:who,closedAt:serverTimestamp()},{merge:true});
+      nextMoves(mid).forEach(x=>{if(!ACTIONS.some(a=>a.id===x.id))b.set(doc(db,"actions",x.id),{text:x.text,dueDate:x.dueDate,owner:"Hersh",amount:x.amount||null,reason:"Next month's moves",status:"todo",source:"next-month",createdAt:serverTimestamp()});});
+      await b.commit();
+      // the plan starts from the opening balances: re-save it once they are set
+      OPENING={...o,asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,setup:false};
+      const f=forecast(true),rows={};f.rows.forEach(r=>rows[r.mk]={float:r.float,joint:r.joint,isaTot:r.isaTot,penTot:r.penTot,mort:r.mort,nw:r.nw,isas:r.isas});
+      if(BASELINE&&BASELINE.rows)await setDoc(doc(db,"v2meta","baseline_"+Date.now()),{...BASELINE,archivedAt:serverTimestamp()});
+      await setDoc(doc(db,"v2meta","baseline"),{name:"Plan from opening balances "+dateShort(runDate),v:BASELINE_V,createdAt:serverTimestamp(),horizon:S.horizon,rows,reason:"Opening balances set"});
+      setStatus("Opening balances set. Plan saved from them.");go("home");}catch(err){fail(err);}
+  };
+}
 function renderME(){
+  if(setupPending())return renderSetupME(currentMEId());
   const mid=currentMEId(), c=computeME(mid), m=c.m;
   const ok=t=>`<span class="chip ok">${t||"Done"}</span>`, todo=t=>`<span class="chip warn">${t}</span>`, info=t=>`<span class="chip grey">${t}</span>`;
   // step 1: regular payments, folded per account
