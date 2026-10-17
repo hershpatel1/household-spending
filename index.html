@@ -213,13 +213,14 @@ details.fold.inner>.fb{padding:0 12px 10px;}
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
-import { getFirestore, collection, addDoc, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, addDoc, doc, setDoc, updateDoc, deleteDoc, getDoc, onSnapshot, writeBatch, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
 
 const app = initializeApp({
   apiKey:"AIzaSyCZwz3F3dZUM_BeQ0GYRQjRijkkNp-2adk", authDomain:"household-budget-e2592.firebaseapp.com", projectId:"household-budget-e2592",
   storageBucket:"household-budget-e2592.firebasestorage.app", messagingSenderId:"487636413466", appId:"1:487636413466:web:8c8072120bf283d66bf5a3"
 });
-const auth=getAuth(app), db=getFirestore(app);
+const auth=getAuth(app);
+let db;try{db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})});}catch(e){db=getFirestore(app);} // offline: saves are held on the phone and sync when back online
 
 /* ================= constants ================= */
 const CATEGORIES=["Food & Household","Clothes","Furnishings & Furniture","Going Out","Travel & Parking","Charity","TakeOut","Petrol","Board Games","Other"];
@@ -230,6 +231,8 @@ const PAID_BY=["Hersh","Sonali"];
 const POTS=[{key:"dayToDay",label:"Day-to-day",cycle:"monthly"},{key:"riyaan",label:"Riyaan",cycle:"monthly"},{key:"exceptionals",label:"Exceptionals",cycle:"annual"},{key:"holidays",label:"Holidays",cycle:"annual"},{key:"householdInvestment",label:"Household Investment",cycle:"open"}];
 const UNITS=[{key:"joint",label:"Joint",accounts:["Joint"]},{key:"hersh",label:"Hersh",accounts:["Hersh Debit","Hersh Credit"]},{key:"sonali",label:"Sonali",accounts:["Sonali Debit","Sonali Credit"]}];
 const DESTS=["Mortgage","Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA","Pension"];
+// "Pension" is Hersh's personal pension (Vanguard); workplace pensions are paid through payroll, never by transfer
+const accLabel=k=>k==="Pension"?"Hersh personal pension":k;
 const ISAS=["Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA"];
 const PENSIONS=["Hersh Scottish Widows","Hersh LifeSight","Hersh Vanguard personal","Hersh CIP workplace","Sonali Scottish Widows","Sonali Imagination workplace"];
 const S={floor:10000,personTarget:5000,aniTarget:99000,mortgageRate:0.0384,sacStart:"2026-12",sacPct:0.03,horizon:"2030-07",
@@ -269,13 +272,20 @@ const unitOf=acc=>(UNITS.find(u=>u.accounts.includes(acc))||{}).key;
 let statusTimer=null;function setStatus(m,err){const s=$("status");clearTimeout(statusTimer);if(!m){s.classList.remove("show");return;}
   s.textContent=m;s.classList.toggle("err",!!err);s.setAttribute("role",err?"alert":"status");requestAnimationFrame(()=>s.classList.add("show"));
   statusTimer=setTimeout(()=>s.classList.remove("show"),err?7000:2800);}
-const fail=e=>setStatus("Save failed: "+e.message,true);
+const ERRLOG_KEY="v2.errors";
+function logError(kind,msg){try{const l=JSON.parse(localStorage.getItem(ERRLOG_KEY)||"[]");l.unshift({at:new Date().toISOString(),kind,msg:String(msg).slice(0,300),view:typeof view!=="undefined"?view:""});localStorage.setItem(ERRLOG_KEY,JSON.stringify(l.slice(0,20)));}catch(e){}}
+window.addEventListener("error",e=>logError("script",e.message+" @"+(e.lineno||"")));
+window.addEventListener("unhandledrejection",e=>logError("promise",e.reason&&e.reason.message||e.reason));
+const fail=e=>{logError("save",e.message);setStatus("Save failed: "+e.message,true);};
 const ordinal=d=>d+([1,21,31].includes(d)?"st":[2,22].includes(d)?"nd":[3,23].includes(d)?"rd":"th");
 
 document.getElementById("status").addEventListener("click",()=>setStatus(""));
 /* ================= state ================= */
 let TX=[],BUDGETS={},ANNUAL={},PLAN=[],ACTIONS=[],PLANNED=[],RULES=[],ME={},OPENING=null,BASELINE=null;
 let view="home";
+// a transaction dated on or before the last month-end's date belongs to a closed month and can't change without reopening it
+const lockedTo=()=>{const l=closedList().filter(m=>!m.setup);return l.length?l[l.length-1].runDate:null;}; // the set-up month is never reconciled, so it never locks
+function lockedMsg(d){const l=lockedTo();return l&&d&&d<=l?`That date is in a month that's closed (up to ${dateShort(l)}). Reopen it in Month-end first, or use a later date.`:null;}
 const LOADED=new Set(),NEEDED=["transactions","budgets","annualBudgets","plan_items","planned_payments","budget_rules","month_ends","opening","baseline"];
 const BASELINE_V=2;
 const FOLD=store.get("v2.fold",{});
@@ -329,10 +339,6 @@ function ruleFor(pot,key){const r=RULES.filter(x=>x.pot===pot&&x.from<=key).sort
 function monthBudget(pot,mk){const b=BUDGETS[mk];if(b&&b[pot]!=null&&(mk<=curMK()))return Number(b[pot]);return ruleFor(pot,mk);}
 function bonusesFor(fy){return TX.filter(t=>t.type==="income"&&t.bonus&&fyStart(t.monthKey)===fy).reduce((s,t)=>s+t.value,0);}
 function annualBudget(pot,fy){const a=ANNUAL[fy];const base=a&&a[pot]!=null?Number(a[pot]):ruleFor(pot,fy);return base+(pot==="exceptionals"?bonusesFor(fy):0);}
-async function syncClassicBudget(){ // keep the classic app working: write this month's budget doc if missing
-  const mk=curMK(); if(BUDGETS[mk]||!RULES.length)return;
-  try{await setDoc(doc(db,"budgets",mk),{dayToDay:ruleFor("dayToDay",mk),riyaan:ruleFor("riyaan",mk),updatedAt:serverTimestamp(),source:"v2"},{merge:true});}catch(e){}
-}
 
 /* ================= seed ================= */
 function seedPlan(){
@@ -443,7 +449,7 @@ function listen(){
   col("plan_items",l=>PLAN=l);
   col("actions",l=>ACTIONS=l);
   col("planned_payments",l=>PLANNED=l);
-  col("budget_rules",l=>{RULES=l;syncClassicBudget();});
+  col("budget_rules",l=>{RULES=l;});
   col("month_ends",l=>{ME={};l.forEach(d=>ME[d.id]=d);});
   onSnapshot(doc(db,"v2meta","opening"),s=>{OPENING=s.exists()?s.data():null;LOADED.add("opening");ensureBaseline();render();},err);
   onSnapshot(doc(db,"v2meta","baseline"),s=>{BASELINE=s.exists()?s.data():false;LOADED.add("baseline");ensureBaseline();render();},err);
@@ -469,10 +475,11 @@ function render(force){
 /* ================= month-end engine ================= */
 const closedList=()=>Object.values(ME).filter(m=>m.status==="closed").sort((a,b)=>a.runDate.localeCompare(b.runDate));
 function lastClose(beforeId){const l=closedList().filter(m=>!beforeId||m.id<beforeId);return l[l.length-1]||null;}
+const pendingOf=(src,acc)=>Object.values(src||{}).filter(p=>p&&p.account===acc&&Number(p.amount)).reduce((s,p)=>s+(p.dir==="in"?1:-1)*Number(p.amount),0);
 function openingFor(mid){
   const lc=lastClose(mid);
-  if(lc)return{date:lc.runDate,balances:lc.balances||{},mortgage:lc.mortgage?.close,isas:lc.isas||{},pensions:lc.pensions||OPENING?.pensions||{},pensionsAt:lc.pensionsAt||OPENING?.pensionsAt};
-  const o=OPENING||SEED_OPENING;return{date:o.asAt,balances:o.balances,mortgage:o.mortgage,isas:o.isas,pensions:o.pensions||{},pensionsAt:o.pensionsAt};
+  if(lc)return{pending:lc.pending||{},date:lc.runDate,balances:lc.balances||{},mortgage:lc.mortgage?.close,isas:lc.isas||{},pensions:lc.pensions||OPENING?.pensions||{},pensionsAt:lc.pensionsAt||OPENING?.pensionsAt};
+  const o=OPENING||SEED_OPENING;return{pending:o.pending||{},date:o.asAt,balances:o.balances,mortgage:o.mortgage,isas:o.isas,pensions:o.pensions||{},pensionsAt:o.pensionsAt};
 }
 function currentMEId(){ // the month being closed: the first month after the last close (or the opening month)
   const lc=lastClose(); const base=lc?addMonths(lc.id,1):mkOf((OPENING||SEED_OPENING).asAt);
@@ -491,10 +498,11 @@ function computeME(mid){
     const opening=u.accounts.reduce((s,a)=>s+(Number(op.balances[a])||0),0);
     const tx=u.accounts.reduce((s,a)=>s+txs.reduce((x,t)=>x+txEffect(t,a),0),0);
     const plan=u.accounts.reduce((s,a)=>s+occ.reduce((x,o)=>x+occEffect(o,amtOf(o),a),0),0);
-    const expected=r2(opening+tx+plan);
+    const pend=u.accounts.reduce((s,a)=>s+pendingOf(op.pending,a),0);
+    const expected=r2(opening+tx+plan+pend);
     const entered=u.accounts.every(a=>m.balances&&m.balances[a]!==undefined&&m.balances[a]!==null&&m.balances[a]!=="");
     const actual=entered?r2(u.accounts.reduce((s,a)=>s+Number(m.balances[a]),0)):null;
-    return{...u,opening:r2(opening),tx:r2(tx),plan:r2(plan),expected,actual,gap:entered?r2(actual-expected):null,txCount:u.accounts.reduce((s,a)=>s+txs.filter(t=>txEffect(t,a)!==0).length,0)};
+    return{...u,opening:r2(opening),tx:r2(tx),plan:r2(plan),pend:r2(pend),expected,actual,gap:entered?r2(actual-expected):null,txCount:u.accounts.reduce((s,a)=>s+txs.filter(t=>txEffect(t,a)!==0).length,0)};
   });
   const mPay=occ.filter(o=>o.p.role==="mortgage").reduce((s,o)=>s+amtOf(o),0), mOver=occ.filter(o=>o.p.to==="Mortgage").reduce((s,o)=>s+amtOf(o),0)+txs.filter(t=>t.toAccount==="Mortgage").reduce((s,t)=>s+t.value,0);
   const mOpen=Number(op.mortgage)||0;
@@ -544,7 +552,7 @@ function renderHome(){
   const horizon=showAllActions?"9999":addDays(t,31);
   const oneoffs=PLAN.filter(p=>p.freq==="oneoff"&&p.status!=="paid"&&!(p.end&&p.end<p.start)).map(p=>({src:"plan",id:p.id,date:occDate(p,p.start),name:p.name,account:p.account,to:p.kind==="transfer"?p.to:"",amount:Number(p.amount)}))
     .concat(PLANNED.filter(p=>p.status==="planned").map(p=>({src:"pp",id:p.id,date:p.date,name:p.description,account:p.account,to:"",amount:Number(p.amount),pot:p.pot}))).filter(x=>x.date<=horizon).sort((a,b)=>a.date.localeCompare(b.date));
-  const oneoffRow=x=>`<div class="li"><div style="min-width:0;flex:1;"><div class="t">Pay ${esc(x.name)}</div><div class="d">${esc(x.account)}${x.to?" → "+esc(x.to):""}${x.pot?" · "+esc(potLabel(x.pot))+" budget":""} · one-off</div><div class="row-btns"><button class="btn sm" data-pay="${x.src}:${x.id}">Paid</button></div>${payOpen===x.src+":"+x.id?paySheet(x):""}</div><div class="r">${x.date<t?`<span class="chip warn">Overdue</span>`:`<span class="chip">${dateShort(x.date)}</span>`}<div class="num small" style="margin-top:4px;">${money(x.amount)}</div></div></div>`;
+  const oneoffRow=x=>`<div class="li"><div style="min-width:0;flex:1;"><div class="t">Pay ${esc(x.name)}</div><div class="d">${esc(x.account)}${x.to?" → "+esc(accLabel(x.to)):""}${x.pot?" · "+esc(potLabel(x.pot))+" budget":""} · one-off</div><div class="row-btns"><button class="btn sm" data-pay="${x.src}:${x.id}">Paid</button></div>${payOpen===x.src+":"+x.id?paySheet(x):""}</div><div class="r">${x.date<t?`<span class="chip warn">Overdue</span>`:`<span class="chip">${dateShort(x.date)}</span>`}<div class="num small" style="margin-top:4px;">${money(x.amount)}</div></div></div>`;
   const merged=shown.map(a=>({d:a.dueDate,h:actionRow(a)})).concat(oneoffs.map(x=>({d:x.date,h:oneoffRow(x)}))).sort((a,b)=>a.d.localeCompare(b.d));
   const mtx=TX.filter(x=>x.monthKey===mk), fy=fyStart(mk), fyTx=TX.filter(x=>fyStart(x.monthKey)===fy);
   const fl=lc?float(lc.balances):float((OPENING||SEED_OPENING).balances);
@@ -569,6 +577,9 @@ function renderHome(){
   <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")+annualBudget("holidays",fy)-potSpend(fyTx,"holidays"))} left across both`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy))}</div>`)}</div>
   <div class="section">${openPotCard(fy)}</div>
 `;
+  (()=>{let l=[];try{l=JSON.parse(localStorage.getItem(ERRLOG_KEY)||"[]");}catch(e){}if(!l.length)return;
+    const d=document.createElement("div");d.className="section";d.innerHTML=fold("home-diag","App diagnostics",`${l.length} recent error${l.length>1?"s":""}`,"",false,`<div class="note small">If something misbehaves, copy this and send it to Claude.</div><pre id="diagText" style="white-space:pre-wrap;font-size:11px;background:var(--bg-2);padding:8px;border-radius:8px;max-height:220px;overflow:auto;">${esc(l.map(x=>`${x.at} [${x.kind}${x.view?" · "+x.view:""}] ${x.msg}`).join("\n"))}</pre><div class="actions-row"><button class="btn ghost sm" id="diagCopy">Copy</button><button class="btn ghost sm" id="diagClear">Clear</button></div>`);
+    $("v-home").appendChild(d);$("diagCopy").onclick=()=>{try{navigator.clipboard.writeText($("diagText").textContent);setStatus("Copied");}catch(e){}};$("diagClear").onclick=()=>{try{localStorage.removeItem(ERRLOG_KEY);}catch(e){}renderHome();};})();
   $$("#potPill button").forEach(b=>b.onclick=()=>{potScope=b.dataset.scope;store.set("v2.potScope",potScope);renderHome();});
   $("toggleActions").onclick=()=>{showAllActions=!showAllActions;renderHome();};
   $("addActionBtn").onclick=()=>$("actionForm").classList.toggle("hidden");
@@ -584,7 +595,7 @@ document.addEventListener("click",async e=>{
 
 /* ================= LOG ================= */
 let logType="spend",editingId=null;
-$("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS));
+$("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS).map(k=>({key:k,label:accLabel(k)})));
 function syncTo(){const f=$("fAccount").value,u=unitOf(f),isa=ISAS.includes(f);[...$("fTo").options].forEach(o=>o.hidden=isa?(!ISAS.includes(o.value)||o.value===f):(!!u&&unitOf(o.value)===u));if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
 $("fAccount").addEventListener("change",syncTo);
 $("fPot").addEventListener("change",()=>{if($("fPot").value==="householdInvestment"){$("fAccount").value="Joint";syncTo();}});$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
@@ -606,6 +617,7 @@ $("logForm").addEventListener("submit",async e=>{
   e.preventDefault();
   const date=$("fDate").value,value=parseFloat($("fValue").value),account=$("fAccount").value;
   if(!(value>0))return setStatus("Enter an amount above zero",true);
+  const lk=lockedMsg(date)||(editingId?lockedMsg(TX.find(x=>x.id===editingId)?.date):null);if(lk)return setStatus(lk,true);
   const base={date,monthKey:mkOf(date),value,account,retailer:$("fRetailer").value.trim(),updatedAt:serverTimestamp()};
   let p;
   if(logType==="spend"||logType==="refund")p={...base,type:"spend",direction:logType==="spend"?"out":"in",pot:$("fPot").value,category:$("fCategory").value,paidBy:$("fPaidBy").value,toAccount:null,bonus:false};
@@ -617,13 +629,13 @@ $("logForm").addEventListener("submit",async e=>{
 $("cancelEdit").addEventListener("click",resetLog);
 function resetLog(){editingId=null;const a=$("fAccount").value,pb=$("fPaidBy").value;$("logForm").reset();$("fDate").value=todayISO();$("fAccount").value=a;$("fPaidBy").value=pb;$("submitBtn").textContent="Add";$("cancelEdit").classList.add("hidden");$("logLabel").textContent="Log a transaction";setType(logType);}
 function startEdit(id){
-  const t=TX.find(x=>x.id===id);if(!t)return;go("log");editingId=id;
+  const t=TX.find(x=>x.id===id);if(!t)return;const lk=lockedMsg(t.date);if(lk)return setStatus(lk,true);go("log");editingId=id;
   setType(t.type==="transfer"?"transfer":t.type==="income"?"income":t.direction==="in"?"refund":"spend");
   $("fDate").value=t.date;$("fValue").value=t.value;$("fAccount").value=t.account;$("fRetailer").value=t.retailer||"";
   if(POTS.some(p=>p.key===t.pot))$("fPot").value=t.pot;if(CATEGORIES.includes(t.category))$("fCategory").value=t.category;if(t.paidBy)$("fPaidBy").value=t.paidBy;if(t.toAccount)$("fTo").value=t.toAccount;$("fBonus").checked=!!t.bonus;
   $("submitBtn").textContent="Save changes";$("cancelEdit").classList.remove("hidden");$("logLabel").textContent="Editing transaction";
 }
-async function removeTx(id){const t=TX.find(x=>x.id===id);if(!confirm(t&&t.oneoffRef?"Delete this transaction? The one-off it paid goes back to planned.":"Delete this transaction?"))return;
+async function removeTx(id){const t=TX.find(x=>x.id===id);const lk=t&&lockedMsg(t.date);if(lk)return setStatus(lk,true);if(!confirm(t&&t.oneoffRef?"Delete this transaction? The one-off it paid goes back to planned.":"Delete this transaction?"))return;
   try{const b=writeBatch(db);b.delete(doc(db,"transactions",id));if(t&&t.oneoffRef){const[c,i]=t.oneoffRef.split("/");b.update(doc(db,c,i),{status:c==="plan_items"?"confirmed":"planned",paidOn:null,paidTx:null,updatedAt:serverTimestamp()});}await b.commit();setStatus("Deleted");}catch(err){fail(err);}}
 function renderLog(){
   const n={};TX.forEach(t=>{const r=(t.retailer||"").trim();if(r&&t.type==="spend")n[r.toLowerCase()]=r;});
@@ -657,10 +669,10 @@ function rowAmount(t){
 function rowHTML(t){
   const a=rowAmount(t);
   const chip=t.type==="payment"?`<span class="chip grey">One-off</span>`:t.type==="transfer"?`<span class="chip grey">Transfer</span>`:t.type==="income"?`<span class="chip">${t.bonus?"Bonus":"Income"}</span>`:`<span class="chip">${esc(potLabel(t.pot))}</span>`;
-  const meta=t.type==="transfer"?`${esc(t.account)} → ${esc(t.toAccount)}`:`${t.type==="spend"?esc(t.category)+" · ":""}${esc(t.account)}${t.type==="spend"&&t.paidBy?" · "+esc(t.paidBy):""}`;
+  const meta=t.type==="transfer"?`${esc(t.account)} → ${esc(accLabel(t.toAccount))}`:`${t.type==="spend"?esc(t.category)+" · ":""}${esc(t.account)}${t.type==="spend"&&t.paidBy?" · "+esc(t.paidBy):""}`;
   return`<div class="row" data-row="${t.id}"><div class="row-top"><span class="row-title">${esc(t.retailer||"(no description)")}</span><span class="row-amt num ${a.cls}">${a.txt}</span></div><div class="row-meta">${chip}<span>${meta}</span></div>
-  <div class="row-detail"><div class="kv"><span>Date</span><b>${dateLong(t.date)}</b><span>Type</span><b>${t.type==="spend"?(t.direction==="in"?"Refund":"Spend"):t.type==="income"?(t.bonus?"Bonus":"Income"):"Transfer"}</b>${t.type==="spend"?`<span>Budget</span><b>${esc(potLabel(t.pot))}</b><span>Category</span><b>${esc(t.category)}</b><span>Paid by</span><b>${esc(t.paidBy)}</b>`:""}<span>Account</span><b>${esc(t.account)}${t.toAccount?" → "+esc(t.toAccount):""}</b></div>
-  <div class="row-btns"><button class="btn sm" data-edit="${t.id}">Edit</button><button class="btn warn sm" data-del="${t.id}">Delete</button></div></div></div>`;
+  <div class="row-detail"><div class="kv"><span>Date</span><b>${dateLong(t.date)}</b><span>Type</span><b>${t.type==="spend"?(t.direction==="in"?"Refund":"Spend"):t.type==="income"?(t.bonus?"Bonus":"Income"):"Transfer"}</b>${t.type==="spend"?`<span>Budget</span><b>${esc(potLabel(t.pot))}</b><span>Category</span><b>${esc(t.category)}</b><span>Paid by</span><b>${esc(t.paidBy)}</b>`:""}<span>Account</span><b>${esc(t.account)}${t.toAccount?" → "+esc(accLabel(t.toAccount)):""}</b></div>
+  ${lockedMsg(t.date)?`<div class="small muted" style="margin-top:8px;">In a closed month. Reopen it in Month-end to change this.</div>`:`<div class="row-btns"><button class="btn sm" data-edit="${t.id}">Edit</button><button class="btn warn sm" data-del="${t.id}">Delete</button></div>`}</div></div>`;
 }
 document.addEventListener("click",e=>{
   const ed=e.target.closest("[data-edit]");if(ed)return startEdit(ed.dataset.edit);
@@ -689,7 +701,7 @@ function itemForm(p,mode){
   return`<form class="sheet form-grid" data-pform="${mode}" data-id="${p?.id||""}">
    ${mode==="end"?`<label class="f full">Last month it is paid<input type="month" name="last" value="${curMK()}" required></label>`:`
    <label class="f full">Name<input name="name" value="${v("name")}" required></label>
-   ${mode==="add"?`<label class="f">Account<select name="account">${opts(BANK)}</select></label><label class="f">Kind<select name="kind"><option value="out">Payment out</option><option value="transfer">Transfer to own account</option><option value="in">Income in</option></select></label><label class="f">To (transfers)<select name="to">${opts(BANK.concat(DESTS),"Not a transfer")}</select></label>`:""}
+   ${mode==="add"?`<label class="f">Account<select name="account">${opts(BANK)}</select></label><label class="f">Kind<select name="kind"><option value="out">Payment out</option><option value="transfer">Transfer to own account</option><option value="in">Income in</option></select></label><label class="f">To (transfers)<select name="to">${opts(BANK.concat(DESTS).map(k=>({key:k,label:accLabel(k)})),"Not a transfer")}</select></label>`:""}
    <label class="f">Amount (£)<input type="number" step="0.01" min="0" name="amount" value="${v("amount")}" required></label>
    <label class="f">Day of month<input name="day" value="${p?.day==="lwd"?"lwd":v("day")}" placeholder="e.g. 15, or lwd"></label>
    <label class="f">Basis<select name="basis"><option value="fixed"${p?.basis==="fixed"?" selected":""}>Fixed (tick or override)</option><option value="estimate"${p?.basis==="estimate"?" selected":""}>Estimate (ask for actual)</option></select></label>
@@ -703,7 +715,7 @@ function planRow(p,mk){
   const hist=seriesOf(p).filter(x=>x.id!==p.id);
   const open=planOpen===p.id;
   return`<div class="li" data-plan="${p.id}" style="cursor:pointer;display:block;">
-   <div style="display:flex;justify-content:space-between;gap:12px;"><div style="min-width:0;"><div class="t">${esc(p.name)}</div><div class="d">${p.kind==="transfer"?"To "+esc(p.to)+" · ":""}${schedText(p)}</div></div>
+   <div style="display:flex;justify-content:space-between;gap:12px;"><div style="min-width:0;"><div class="t">${esc(p.name)}</div><div class="d">${p.kind==="transfer"?"To "+esc(accLabel(p.to))+" · ":""}${schedText(p)}</div></div>
    <div class="r"><div class="num" style="font-weight:600;${p.kind==="in"?"color:var(--teal-dark)":""}">${p.kind==="in"?"+":""}${money(p.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${p.basis==="estimate"?`<span class="chip grey">Estimate</span>`:""}${p.status==="to confirm"?`<span class="chip warn">To confirm</span>`:""}${p.freq==="oneoff"&&p.end&&p.end<p.start?`<span class="chip warn">Switched off</span>`:""}</div></div></div>
    ${open?`<div style="cursor:default;" data-noclose>${p.note?`<div class="d" style="margin-top:6px;">${esc(p.note)}</div>`:""}${hist.length?`<div class="d" style="margin-top:6px;">History: ${hist.map(h=>`${esc(h.name)} ${money(h.amount)} ${h.start?shortMonth(h.start):""}${h.end?" to "+shortMonth(h.end):""}`).join("; ")}</div>`:""}
      ${payOpen==="plan:"+p.id?paySheet({src:"plan",id:p.id,name:p.name,amount:Number(p.amount),account:p.account}):""}${planMode?itemForm(p,planMode):`<div class="row-btns"><button class="btn sm" data-pm="change">Change</button><button class="btn ghost sm" data-pm="replace">Replace</button>${p.freq==="oneoff"?(p.end&&p.end<p.start?`<button class="btn sm" data-pm="restore">Restore (it was ended by mistake)</button>`:`<button class="btn sm" data-pay="plan:${p.id}">Paid</button><button class="btn warn sm" data-pm="delete">Delete</button>`):`<button class="btn ghost sm" data-pm="end">End</button>`}${p.status==="to confirm"?`<button class="btn ghost sm" data-pm="confirm">Mark confirmed</button>`:""}</div>`}</div>`:""}
@@ -796,6 +808,7 @@ document.addEventListener("click",e=>{const b=e.target.closest("[data-pay]");if(
   if(e.target.closest("[data-paycancel]")){payOpen=null;render(true);}});
 document.addEventListener("submit",async e=>{const f=e.target.closest("[data-payform]");if(!f)return;e.preventDefault();
   const[src,id]=f.dataset.payform.split(":"),date=f.date.value,value=parseFloat(f.amount.value)||0,account=f.account.value,ts=serverTimestamp();
+  const lk=lockedMsg(date);if(lk)return setStatus(lk,true);
   const base={date,monthKey:mkOf(date),value,account,createdAt:ts,updatedAt:ts,oneoffRef:`${src==="plan"?"plan_items":"planned_payments"}/${id}`};
   let tx;
   if(src==="pp"){const x=PLANNED.find(p=>p.id===id);tx={...base,type:"spend",direction:x.direction||"out",pot:x.pot||"none",category:"Other",paidBy:ownerOf(account),retailer:x.description,toAccount:null,bonus:false};}
@@ -812,7 +825,7 @@ function renderPlanOneoff(){
   const fromPlan=PLAN.filter(p=>p.freq==="oneoff"&&p.status!=="paid"&&(p.start>=mk||!p.end)).map(p=>({src:"plan",id:p.id,date:occDate(p,p.start),name:p.name,account:p.account,to:p.kind==="transfer"?p.to:"",amount:Number(p.amount),dir:p.kind==="in"?"in":"out",off:p.end&&p.end<p.start,est:p.basis==="estimate",note:p.note}));
   const fromPP=PLANNED.filter(p=>p.status==="planned").map(p=>({src:"pp",id:p.id,date:p.date,name:p.description,account:p.account,to:"",amount:Number(p.amount),dir:p.direction,pot:p.pot}));
   const l=fromPlan.concat(fromPP).sort((a,b)=>a.date.localeCompare(b.date));
-  const row=x=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(x.name)}</div><div class="d">${dateLong(x.date)} · ${esc(x.account)}${x.to?" → "+esc(x.to):""}${x.pot?" · from the "+esc(potLabel(x.pot))+" budget":""}</div>
+  const row=x=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(x.name)}</div><div class="d">${dateLong(x.date)} · ${esc(x.account)}${x.to?" → "+esc(accLabel(x.to)):""}${x.pot?" · from the "+esc(potLabel(x.pot))+" budget":""}</div>
     <div class="row-btns">${x.off?`<button class="btn sm" data-restore1="${x.id}">Restore</button>`:`<button class="btn sm" data-pay="${x.src}:${x.id}">Paid</button>${x.src==="pp"?`<button class="btn warn sm" data-pp="cancelled" data-id="${x.id}">Cancel</button>`:`<button class="btn warn sm" data-del1="${x.id}">Delete</button>`}`}</div>${payOpen===x.src+":"+x.id?paySheet(x):""}</div>
     <div class="r"><div class="num" style="font-weight:600;${x.dir==="in"?"color:var(--teal-dark)":""}">${x.dir==="in"?"+":"-"}${money(x.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${x.to?`<span class="chip grey">Transfer</span>`:x.pot?`<span class="chip">${esc(potLabel(x.pot))}</span>`:`<span class="chip grey">Payment</span>`}${x.est?`<span class="chip grey">Estimate</span>`:""}${x.off?`<span class="chip warn">Switched off</span>`:""}</div></div></div>`;
   $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Every future one-off in one list: payments, transfers (to an ISA, the mortgage, a pension or between you) and budget spends you know are coming. One-offs from a regular account also show under that account in Regular. All of them feed the forecast.</div>
@@ -824,7 +837,7 @@ function renderPlanOneoff(){
    <label class="f">Amount (£)<input type="number" step="0.01" min="0" id="ppAmount" required></label>
    <label class="f">From / into account<select id="ppAccount">${opts(BANK)}</select></label>
    <label class="f" id="ppPotL">Budget<select id="ppPot">${opts(POTS)}</select></label>
-   <label class="f hidden" id="ppToL">To<select id="ppTo">${opts(BANK.concat(DESTS))}</select></label>
+   <label class="f hidden" id="ppToL">To<select id="ppTo">${opts(BANK.concat(DESTS).map(k=>({key:k,label:accLabel(k)})))}</select></label>
    <div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
    <div class="note small" style="margin-top:8px;">A spend from a budget comes out of that budget, so the forecast doesn't count it twice. Payments, transfers and money in are ticked at month-end like regular payments.</div></div>`;
   const sync=()=>{const k=$("ppKind").value;$("ppPotL").classList.toggle("hidden",k!=="budget");$("ppToL").classList.toggle("hidden",k!=="transfer");};$("ppKind").onchange=sync;sync();
@@ -849,7 +862,8 @@ function startState(fromOpening){
   const bal=lc?lc.balances:o.balances, unit=k=>UNITS.find(u=>u.key===k).accounts.reduce((s,a)=>s+(Number(bal[a])||0),0);
   const pens={};PENSIONS.forEach(k=>pens[k]=Number((lc?lc.pensions:o.pensions)?.[k])||0);
   const isas={};ISAS.forEach(k=>isas[k]=Number((lc?lc.isas:o.isas)?.[k])||0);
-  return{date:lc?lc.runDate:o.asAt,joint:unit("joint"),hersh:unit("hersh"),sonali:unit("sonali"),isas,pens,mort:Number(lc?lc.mortgage?.close??o.mortgage:o.mortgage)||0};
+  const pd=lc?lc.pending:o.pending,pu=k=>UNITS.find(u=>u.key===k).accounts.reduce((s,a)=>s+pendingOf(pd,a),0);
+  return{date:lc?lc.runDate:o.asAt,joint:unit("joint")+pu("joint"),hersh:unit("hersh")+pu("hersh"),sonali:unit("sonali")+pu("sonali"),isas,pens,mort:Number(lc?lc.mortgage?.close??o.mortgage:o.mortgage)||0};
 }
 function p3mShare(pot){ // previous three complete months: share of the budget's spending by person (own accounts only)
   const a=addMonths(curMK(),-3),b=addMonths(curMK(),-1);let h=0,s=0;
@@ -860,7 +874,7 @@ function forecast(fromOpening){
   const st=startState(fromOpening), today=todayISO(), rows=[];
   let{joint,hersh,sonali,mort}=st;const isas={...st.isas},pens={...st.pens};
   const unitAdd=(acc,v)=>{const u=unitOf(acc);if(u==="joint")joint+=v;else if(u==="hersh")hersh+=v;else if(u==="sonali")sonali+=v;};
-  const dest=(to,v,from)=>{if(ISAS.includes(to))isas[to]+=v;else if(to==="Pension")pens[ownerOf(from)==="Sonali"?"Sonali Imagination workplace":"Hersh Vanguard personal"]+=v/0.8;else if(to==="Mortgage")mort-=v;else unitAdd(to,v);};
+  const dest=(to,v,from)=>{if(ISAS.includes(to))isas[to]+=v;else if(to==="Pension")pens["Hersh Vanguard personal"]+=v/0.8;else if(to==="Mortgage")mort-=v;else unitAdd(to,v);};
   const shares={};POTS.forEach(p=>shares[p.key]=p3mShare(p.key));
   const fySpent={};let prevEnd=st.date;
   for(let mk=mkOf(st.date);mk<=S.horizon;mk=addMonths(mk,1)){
@@ -1006,7 +1020,7 @@ async function meItem(mid,key,val){await meSave(mid,{items:{[key]:val}});}
 const PEOPLE=[{key:"hersh",label:"Hersh",field:"payslip",role:"hershPay",sac:true},{key:"sonali",label:"Sonali",field:"payslipS",role:"sonaliPay",sac:false}];
 function pensionPaid(who,ty){
   // tax year runs 6 April to 5 April; relief at source: cash paid is 80% of the gross contribution
-  const a=ty+"-06",b=(+ty.slice(0,4)+1)+"-04-05",mine=acc=>ownerOf(acc)===who.label;
+  const a=ty+"-06",b=(+ty.slice(0,4)+1)+"-04-05",mine=acc=>who.key==="hersh";
   const fromTx=TX.filter(t=>t.type==="transfer"&&t.toAccount==="Pension"&&mine(t.account)&&t.date>=a&&t.date<=b).reduce((s,t)=>s+t.value,0);
   let fromPlan=0;Object.values(ME).forEach(m=>Object.entries(m.items||{}).forEach(([k,it])=>{const[id,mk]=k.split("@");const p=PLAN.find(x=>x.id===id);if(!p||p.to!=="Pension"||!mine(p.account)||it.status==="missing")return;const d=occDate(p,mk);if(d<a||d>b)return;fromPlan+=it.amount!=null?Number(it.amount):Number(p.amount);}));
   const cash=r2(fromTx+fromPlan);return{cash,gross:r2(cash/0.8)};
@@ -1049,18 +1063,24 @@ function renderSetupME(mid){
   ${fold(`me-${mid}-setup-cur`,"1. Current accounts and cards","As your banking apps show them now",entered?`<span class="chip ok">Done</span>`:`<span class="chip warn">To enter</span>`,!entered,
     `<div class="form-grid">${fields.map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" inputmode="decimal" data-mebal="${k}" value="${bal[k]!=null?(CARDS.includes(k)?-bal[k]:bal[k]):""}"></label>`).join("")}</div>
     ${fl!=null?`<div class="calc"><span>Float (Hersh and Sonali current accounts less cards)</span><span class="num tot">${money(fl)}</span></div>`:""}
-    <div class="note small" style="margin-top:8px;">Use the balance including anything still pending, so pending payments don't need chasing later. If your app shows pending items separately, take them off.</div>`)}
+    <div class="note small" style="margin-top:8px;">Use the balance excluding anything still pending. List the pending items below, so they are counted when they clear.</div>`)}
+  ${fold(`me-${mid}-setup-pend`,"Pending on the day",`${Object.values(m.pending||{}).filter(Boolean).length} listed`,"",true,
+    `${Object.entries(m.pending||{}).filter(([,p])=>p).map(([k,p])=>`<div class="li"><div><div class="t">${esc(p.desc||"Pending")}</div><div class="d">${esc(p.account)}</div></div><div class="r"><div class="num" style="font-weight:600;">${p.dir==="in"?"+":"-"}${money(p.amount)}</div><button class="btn ghost sm" data-pdel="${k}" style="margin-top:4px;">Remove</button></div></div>`).join("")||`<div class="note">Nothing pending.</div>`}
+    <form id="pendForm" class="form-grid" style="margin-top:10px;"><label class="f full">What<input name="desc" required placeholder="e.g. Tesco, water bill"></label><label class="f">Account<select name="account">${opts(BANK)}</select></label><label class="f">Amount (£)<input type="number" step="0.01" min="0.01" name="amount" required></label><label class="f">Direction<select name="dir"><option value="out">Money out</option><option value="in">Money in</option></select></label><div class="actions-row full" style="margin-top:0;"><button class="btn ghost sm">Add pending item</button></div></form>
+    <div class="note small" style="margin-top:6px;">Don't also log these in Log; they are counted here. Card spends that are pending still go on the card's line.</div>`)}
   ${fold(`me-${mid}-setup-inv`,"2. Mortgage, ISAs and pensions","Optional; leave a box empty to keep the figure from 17 October","",false,
     `<div class="li"><div style="flex:1;"><div class="t">Mortgage (Nationwide)</div><div class="d">17 Oct ${money((OPENING||SEED_OPENING).mortgage)}</div></div><div class="r"><input type="number" step="0.01" data-memort="close" value="${v(m.mortgage?.close)}" placeholder="Balance" style="width:130px;"></div></div>
     ${ISAS.map(k=>`<div class="li"><div style="flex:1;"><div class="t">${k}</div><div class="d">17 Oct ${money((OPENING||SEED_OPENING).isas?.[k]||0)}</div></div><div class="r"><input type="number" step="0.01" data-meisa="${k}" value="${v(m.isas?.[k])}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}
     ${PENSIONS.map(k=>`<div class="li"><div style="flex:1;"><div class="t">${k}</div><div class="d">17 Oct ${(OPENING||SEED_OPENING).pensions?.[k]!=null?money((OPENING||SEED_OPENING).pensions[k]):"not set"}</div></div><div class="r"><input type="number" step="0.01" data-mepen="${k}" value="${v(m.pensions?.[k])}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}`)}
   ${fold(`me-${mid}-setup-ps`,"3. Hersh's payslip (optional)",`${shortMonth(mid)} payslip, for the £99,000 test`,ps.ytd!=null?`<span class="chip ok">Done</span>`:`<span class="chip grey">Optional</span>`,false,
-    `<div class="form-grid">${[["ytd","Taxable pay to date"],["period","Taxable pay this period"],["net","Net pay"]].map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" data-meps="${k}" data-who="hersh" value="${v(ps[k])}"></label>`).join("")}</div>
+    `<div class="form-grid">${[["ytd","Taxable pay to date"],["period","Taxable pay this period"],["net","Net pay this period"]].map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" data-meps="${k}" data-who="hersh" value="${v(ps[k])}"></label>`).join("")}</div>
     ${ps.ytd&&ps.period?`<div class="calc"><span>Projected adjusted net income</span><span class="num tot">${money(ani.proj)}</span><span>Still to pay into the personal pension (cash)</span><span class="num">${money(ani.cash)}</span></div>`:""}`)}
   <div class="card"><div class="eyebrow">Start</div><div class="note">Saves these as your opening balances, re-saves the plan from them, and adds next month's moves to your actions.</div>
    <div class="actions-row"><button class="btn accent" id="meSetup" ${entered?"":"disabled"}>Set opening balances</button></div></div>`;
   const num=x=>x===""?null:parseFloat(x);
   $("meRun").onchange=e=>meSave(mid,{runDate:e.target.value});
+  $("pendForm").onsubmit=e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target).entries());meSave(mid,{pending:{["p"+Date.now()]:{desc:d.desc.trim(),account:d.account,amount:parseFloat(d.amount)||0,dir:d.dir}}});};
+  $$("[data-pdel]").forEach(b=>b.onclick=()=>meSave(mid,{pending:{[b.dataset.pdel]:null}}));
   $$("[data-mebal]").forEach(i=>i.addEventListener("change",()=>{const a=i.dataset.mebal;let x=num(i.value);if(x!=null&&CARDS.includes(a))x=-Math.abs(x);meSave(mid,{runDate,balances:{[a]:x}});}));
   $$("[data-memort]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{mortgage:{close:num(i.value)}})));
   $$("[data-meisa]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{isas:{[i.dataset.meisa]:num(i.value)}})));
@@ -1072,12 +1092,13 @@ function renderSetupME(mid){
     const isas=keep(m.isas,o.isas),pens=keep(m.pensions,o.pensions),mort=m.mortgage?.close!=null&&m.mortgage.close!==""?Number(m.mortgage.close):o.mortgage;
     const pensionsUpdated=Object.values(m.pensions||{}).some(x=>x!=null&&x!=="");
     try{const b=writeBatch(db);
-      b.set(doc(db,"v2meta","opening"),{asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,setup:false,setBy:who,setAt:serverTimestamp(),note:"Opening balances set from the banking apps at the first month-end"});
-      b.set(doc(db,"month_ends",mid),{status:"closed",setup:true,runDate,balances:{...bal},mortgage:{close:mort},isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,float:r2(float(bal)),closedBy:who,closedAt:serverTimestamp()},{merge:true});
+      const pending=Object.fromEntries(Object.entries(m.pending||{}).filter(([,p])=>p));
+      b.set(doc(db,"v2meta","opening"),{pending,asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,setup:false,setBy:who,setAt:serverTimestamp(),note:"Opening balances set from the banking apps at the first month-end"});
+      b.set(doc(db,"month_ends",mid),{pending,status:"closed",setup:true,runDate,balances:{...bal},mortgage:{close:mort},isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,float:r2(float(bal)),closedBy:who,closedAt:serverTimestamp()},{merge:true});
       nextMoves(mid).forEach(x=>{if(!ACTIONS.some(a=>a.id===x.id))b.set(doc(db,"actions",x.id),{text:x.text,dueDate:x.dueDate,owner:"Hersh",amount:x.amount||null,reason:"Next month's moves",status:"todo",source:"next-month",createdAt:serverTimestamp()});});
       await b.commit();
       // the plan starts from the opening balances: re-save it once they are set
-      OPENING={...o,asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,setup:false};
+      OPENING={...o,pending,asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,setup:false};
       const f=forecast(true),rows={};f.rows.forEach(r=>rows[r.mk]={float:r.float,joint:r.joint,isaTot:r.isaTot,penTot:r.penTot,mort:r.mort,nw:r.nw,isas:r.isas});
       if(BASELINE&&BASELINE.rows)await setDoc(doc(db,"v2meta","baseline_"+Date.now()),{...BASELINE,archivedAt:serverTimestamp()});
       await setDoc(doc(db,"v2meta","baseline"),{name:"Plan from opening balances "+dateShort(runDate),v:BASELINE_V,createdAt:serverTimestamp(),horizon:S.horizon,rows,reason:"Opening balances set"});
@@ -1092,7 +1113,7 @@ function renderME(){
   const occRow=o=>{const it=c.items[o.key],est=o.p.basis==="estimate",st=it?.status,amtShown=it?.amount!=null?it.amount:o.p.amount;
     const ctrl=est?`<div class="inline-in"><input type="number" step="0.01" inputmode="decimal" placeholder="Actual" data-meest="${o.key}" value="${it?.amount??""}"><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`
       :`<div class="row-btns" style="margin-top:0;"><button class="btn sm${st==="ticked"?" on":""}" data-metick="${o.key}">${st==="ticked"?"Ticked":"Tick"}</button><button class="btn ghost sm${st==="override"?" on":""}" data-meovr="${o.key}">Override</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`;
-    return`<div class="li" style="display:block;"><div style="display:flex;justify-content:space-between;gap:10px;"><div style="min-width:0;"><div class="t">${esc(o.p.name)}</div><div class="d">${dateShort(o.date)}${o.p.kind==="transfer"?" · to "+esc(o.p.to):""}${est?` · estimate ${money(o.p.amount)}`:""}</div></div><div class="r num" style="font-weight:600;${o.p.kind==="in"?"color:var(--teal-dark)":""}">${st==="missing"?"£0.00":(o.p.kind==="in"?"+":"")+money(amtShown)}</div></div>
+    return`<div class="li" style="display:block;"><div style="display:flex;justify-content:space-between;gap:10px;"><div style="min-width:0;"><div class="t">${esc(o.p.name)}</div><div class="d">${dateShort(o.date)}${o.p.kind==="transfer"?" · to "+esc(accLabel(o.p.to)):""}${est?` · estimate ${money(o.p.amount)}`:""}</div></div><div class="r num" style="font-weight:600;${o.p.kind==="in"?"color:var(--teal-dark)":""}">${st==="missing"?"£0.00":(o.p.kind==="in"?"+":"")+money(amtShown)}</div></div>
       <div style="margin-top:8px;">${ctrl}</div>
       ${meOverride===o.key?`<form class="sheet form-grid" data-meovrform="${o.key}"><label class="f">Actual amount (£)<input type="number" step="0.01" name="amt" value="${it?.amount??o.p.amount}" required></label><label class="f">Applies to<select name="scope"><option value="month">Just this month</option><option value="forward">This month and going forward</option></select></label><div class="full actions-row" style="margin-top:0;"><button type="button" class="btn ghost sm" data-meovrcancel>Cancel</button><button class="btn sm">Save</button></div></form>`:""}</div>`;};
   let firstAcc=null;const accFolds=ACCOUNTS.map(a=>{const l=c.occ.filter(o=>o.p.account===a);if(!l.length)return"";const left=l.filter(o=>!c.resolved(o)).length;
@@ -1111,14 +1132,14 @@ function renderME(){
       :`<div class="gap ok"><span>Under £99,000, headroom</span><span class="num">${money(S.aniTarget-ani.proj)}</span></div>`}`:"";
     const status=!done?(payOcc?todo("To enter"):info("Not due")):ani.gross>0?todo("Over £99k"):ok("On target");
     return fold(`me-${mid}-ps-${who.key}`,`${who.label}`,payOcc?`${shortMonth(mid)} payslip; net pay fills the pay line`:`No pay due this period`,status,!done&&!!payOcc&&who===PEOPLE.find(w=>!psDoneOf(w)),
-      `<div class="form-grid">${[["ytd","Taxable pay to date"],["period","Taxable pay this period"],["net","Net pay"]].map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" inputmode="decimal" data-meps="${k}" data-who="${who.key}" value="${ps[k]??""}"></label>`).join("")}</div>${res}`,true);};
+      `<div class="form-grid">${[["ytd","Taxable pay to date"],["period","Taxable pay this period"],["net","Net pay this period"]].map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" inputmode="decimal" data-meps="${k}" data-who="${who.key}" value="${ps[k]??""}"></label>`).join("")}</div>${res}`,true);};
   const psDone=PEOPLE.every(w=>{const ps=m[w.field]||{};return !c.occ.find(o=>o.p.role===w.role)||(ps.ytd!=null&&ps.period!=null&&ps.net!=null);});
   const step2=fold(`me-${mid}-s2`,"2. Payslips","Pay and the £99,000 adjusted net income test",psDone?ok():todo("To enter"),firstStep===2,PEOPLE.map(payslip).join(""));
   // step 3: current accounts
   const unit=u=>{const st=u.gap==null?todo("Enter balance"):u.gap===0?ok("£0.00"):todo(money(u.gap,true));
     return fold(`me-${mid}-u-${u.key}`,u.label,`Expected ${money(u.expected)}`,st,u===c.units.find(x=>x.gap!==0),
     `<div class="form-grid">${u.accounts.map(a=>`<label class="f">${esc(a)}${CARDS.includes(a)?" (owed)":""}<input type="number" step="0.01" inputmode="decimal" data-mebal="${a}" value="${m.balances&&m.balances[a]!=null?(CARDS.includes(a)?-m.balances[a]:m.balances[a]):""}"></label>`).join("")}</div>
-    <div class="calc"><span>Opening (${dateShort(c.op.date)})</span><span class="num">${money(u.opening)}</span><span>Regular payments and income</span><span class="num">${money(u.plan,true)}</span><span>Logged transactions (${u.txCount})</span><span class="num">${money(u.tx,true)}</span><span class="tot">Expected</span><span class="num tot">${money(u.expected)}</span>${u.actual!=null?`<span>Actual</span><span class="num">${money(u.actual)}</span>`:""}</div>
+    <div class="calc"><span>Opening (${dateShort(c.op.date)})</span><span class="num">${money(u.opening)}</span><span>Regular payments and income</span><span class="num">${money(u.plan,true)}</span>${u.pend?`<span>Pending at the start, now cleared</span><span class="num">${money(u.pend,true)}</span>`:""}<span>Logged transactions (${u.txCount})</span><span class="num">${money(u.tx,true)}</span><span class="tot">Expected</span><span class="num tot">${money(u.expected)}</span>${u.actual!=null?`<span>Actual</span><span class="num">${money(u.actual)}</span>`:""}</div>
     ${u.gap==null?"":u.gap===0?`<div class="gap ok"><span>Ties out</span><span class="num">£0.00</span></div>`:`<div class="gap bad"><span>Gap: log what's missing</span><span class="num">${money(u.gap,true)}</span></div>`}
     <div class="actions-row"><button class="btn ghost sm" data-feedunit="${u.key}">See logged transactions</button></div>`,true);};
   const uLeft=c.units.filter(u=>u.gap!==0).length;

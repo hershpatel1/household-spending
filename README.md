@@ -10,6 +10,7 @@ Live at https://hershpatel1.github.io/household-spending/
 |---|---|
 | `index.html` | The whole app: one page (HTML, CSS and JavaScript), hosted by GitHub Pages |
 | `README.md` | This file |
+| `tests/` | Automated checks: the app runs in a headless browser against an in-memory copy of Firebase (never the real data) |
 
 The app talks straight to the Firebase project `household-budget-e2592` (Firestore and anonymous sign-in). No bank details are stored anywhere.
 
@@ -24,6 +25,25 @@ The app talks straight to the Firebase project `household-budget-e2592` (Firesto
 ## Data (Firestore collections)
 
 `transactions`, `budgets`, `annualBudgets` (shared with the original app), and `plan_items`, `actions`, `planned_payments`, `budget_rules`, `month_ends`, `v2meta` (opening balances, seed version, the saved plan).
+
+## Testing
+
+Run before every change goes live:
+
+```
+cd tests
+npm install
+npx playwright install chromium   # first time only
+npm test
+```
+
+It covers: seeding, logging and the transaction feed, the set-up month with pending items, a full month-end tying out to £0.00, the £99,000 test with an early pension payment, paying and un-paying one-offs, locked closed months, and the forecast. Any failure exits with an error.
+
+## Behaviour worth knowing
+
+- Saves are held on the phone when offline and sync when the signal returns.
+- A month that has been closed is locked: transactions dated in it can't be added, edited or deleted until it is reopened in Month-end.
+- Recent errors are kept on the phone and shown under "App diagnostics" at the foot of Home.
 
 ## History
 
