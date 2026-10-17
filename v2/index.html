@@ -683,14 +683,17 @@ function planRow(p,mk){
   const open=planOpen===p.id;
   return`<div class="li" data-plan="${p.id}" style="cursor:pointer;display:block;">
    <div style="display:flex;justify-content:space-between;gap:12px;"><div style="min-width:0;"><div class="t">${esc(p.name)}</div><div class="d">${p.kind==="transfer"?"To "+esc(p.to)+" · ":""}${schedText(p)}</div></div>
-   <div class="r"><div class="num" style="font-weight:600;${p.kind==="in"?"color:var(--teal-dark)":""}">${p.kind==="in"?"+":""}${money(p.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${p.basis==="estimate"?`<span class="chip grey">Estimate</span>`:""}${p.status==="to confirm"?`<span class="chip warn">To confirm</span>`:""}</div></div></div>
+   <div class="r"><div class="num" style="font-weight:600;${p.kind==="in"?"color:var(--teal-dark)":""}">${p.kind==="in"?"+":""}${money(p.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${p.basis==="estimate"?`<span class="chip grey">Estimate</span>`:""}${p.status==="to confirm"?`<span class="chip warn">To confirm</span>`:""}${p.freq==="oneoff"&&p.end&&p.end<p.start?`<span class="chip warn">Switched off</span>`:""}</div></div></div>
    ${open?`<div style="cursor:default;" data-noclose>${p.note?`<div class="d" style="margin-top:6px;">${esc(p.note)}</div>`:""}${hist.length?`<div class="d" style="margin-top:6px;">History: ${hist.map(h=>`${esc(h.name)} ${money(h.amount)} ${h.start?shortMonth(h.start):""}${h.end?" to "+shortMonth(h.end):""}`).join("; ")}</div>`:""}
-     ${planMode?itemForm(p,planMode):`<div class="row-btns"><button class="btn sm" data-pm="change">Change</button><button class="btn ghost sm" data-pm="replace">Replace</button><button class="btn ghost sm" data-pm="end">End</button>${p.status==="to confirm"?`<button class="btn ghost sm" data-pm="confirm">Mark confirmed</button>`:""}</div>`}</div>`:""}
+     ${planMode?itemForm(p,planMode):`<div class="row-btns"><button class="btn sm" data-pm="change">Change</button><button class="btn ghost sm" data-pm="replace">Replace</button>${p.freq==="oneoff"?(p.end&&p.end<p.start?`<button class="btn sm" data-pm="restore">Restore (it was ended by mistake)</button>`:`<button class="btn warn sm" data-pm="delete">Delete</button>`):`<button class="btn ghost sm" data-pm="end">End</button>`}${p.status==="to confirm"?`<button class="btn ghost sm" data-pm="confirm">Mark confirmed</button>`:""}</div>`}</div>`:""}
   </div>`;
+}
+function endedItems(){ // regular payments that have stopped and were not replaced
+  const mk=curMK();return PLAN.filter(p=>p.freq!=="oneoff"&&p.end&&p.end<mk&&!PLAN.some(x=>x.id!==p.id&&(x.series||x.id)===(p.series||p.id)&&x.start===addMonths(p.end,1)));
 }
 function renderPlanPay(){
   const mk=curMK();
-  const live=PLAN.filter(p=>!p.end||p.end>=mk);
+  const live=PLAN.filter(p=>!p.end||p.end>=mk||(p.freq==="oneoff"&&p.end<p.start&&p.start>=mk));
   // show only the current or next version of each series
   const bySeries={};live.forEach(p=>{const s=p.series||p.id;const cur=bySeries[s];const isNow=!p.start||p.start<=mk;if(!cur)bySeries[s]=p;else{const curNow=!cur.start||cur.start<=mk;if(isNow&&!curNow)bySeries[s]=p;else if(isNow===curNow&&(p.start||"")<(cur.start||""))bySeries[s]=p;}});
   const items=Object.values(bySeries);
@@ -698,19 +701,25 @@ function renderPlanPay(){
     const its=items.filter(p=>u.accounts.includes(p.account));
     const inc=its.filter(p=>p.kind==="in"),out=its.filter(p=>p.kind!=="in").sort((a,b)=>(a.freq==="monthly"?0:1)-(b.freq==="monthly"?0:1)||b.amount-a.amount);
     const monthOut=its.filter(p=>planDue(p,mk)&&p.kind!=="in").reduce((s,p)=>s+Number(p.amount),0);
-    const monthly=inc.concat(out.filter(p=>p.freq==="monthly")),other=out.filter(p=>p.freq!=="monthly");
+    const monthly=inc.concat(out.filter(p=>p.freq==="monthly")),yearly=out.filter(p=>p.freq==="annual"||p.freq==="sixmonthly"),once=out.filter(p=>p.freq==="oneoff").sort((a,b)=>a.start.localeCompare(b.start));
+    const ended=endedItems().filter(p=>u.accounts.includes(p.account));
     const conf=its.filter(p=>p.status==="to confirm").length;
-    return fold(`plan-${u.key}`,u.label,`${its.length} items · ${money(monthOut)} out in ${shortMonth(mk)}`,conf?`<span class="chip warn">${conf} to confirm</span>`:"",false,
-      (monthly.length?fold(`plan-${u.key}-m`,"Monthly",`${monthly.length}`,"",true,monthly.map(p=>planRow(p,mk)).join(""),true):"")+(other.length?fold(`plan-${u.key}-o`,"Yearly, twice yearly and one-off",`${other.length}`,"",false,other.map(p=>planRow(p,mk)).join(""),true):""));
+    return fold(`plan-${u.key}`,u.label,`${its.length-once.length} regular${once.length?` · ${once.length} one-off`:""} · ${money(monthOut)} out in ${shortMonth(mk)}`,conf?`<span class="chip warn">${conf} to confirm</span>`:"",false,
+      (monthly.length?fold(`plan-${u.key}-m`,"Monthly",`${monthly.length}`,"",true,monthly.map(p=>planRow(p,mk)).join(""),true):"")
+      +(yearly.length?fold(`plan-${u.key}-o`,"Yearly and twice yearly",`${yearly.length}`,"",false,yearly.map(p=>planRow(p,mk)).join(""),true):"")
+      +(once.length?fold(`plan-${u.key}-1`,"One-offs",`${once.length} · also listed in the One-offs tab`,"",false,once.map(p=>planRow(p,mk)).join(""),true):"")
+      +(ended.length?fold(`plan-${u.key}-x`,"Ended",`${ended.length} · tap Restore to bring one back`,"",false,ended.map(p=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(p.name)}</div><div class="d">${money(p.amount)} · last paid ${shortMonth(p.end)}</div></div><div class="r"><button class="btn ghost sm" data-restore="${p.id}">Restore</button></div></div>`).join(""),true):""));
   }).join("");
-  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Regular payments and income. Not logged in Spend: at month-end each is ticked or overridden, and estimates are given their actual. Tap an item to change, replace or end it from a chosen month.</div>${groups}
+  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Regular payments and income. Not logged in Spend: at month-end each is ticked or overridden, and estimates are given their actual. Tap an item to change, replace or end it from a chosen month. End means "last paid in this month"; ended payments move to Ended, where Restore undoes it.</div>${groups}
   <div class="card">${adding?itemForm(null,"add"):`<button class="btn" id="addPlan">Add a regular payment</button>`}</div>`;
   if($("addPlan"))$("addPlan").onclick=()=>{adding=true;renderPlan();};
 }
 document.addEventListener("click",async e=>{
   if(e.target.closest("[data-pcancel]")){planMode=null;adding=false;renderPlan();return;}
   const pm=e.target.closest("[data-pm]");
-  if(pm){const p=PLAN.find(x=>x.id===planOpen);if(pm.dataset.pm==="confirm"){try{await updateDoc(doc(db,"plan_items",p.id),{status:"confirmed"});}catch(err){fail(err);}return;}planMode=pm.dataset.pm;renderPlan();return;}
+  if(pm){const p=PLAN.find(x=>x.id===planOpen);if(pm.dataset.pm==="delete"){if(!confirm(`Delete the one-off ${p.name}?`))return;try{await deleteDoc(doc(db,"plan_items",p.id));setStatus("Deleted "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
+    if(pm.dataset.pm==="restore"){try{await updateDoc(doc(db,"plan_items",p.id),{end:""});setStatus("Restored "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
+    if(pm.dataset.pm==="confirm"){try{await updateDoc(doc(db,"plan_items",p.id),{status:"confirmed"});}catch(err){fail(err);}return;}planMode=pm.dataset.pm;renderPlan();return;}
   if(e.target.closest("[data-noclose]"))return;
   const r=e.target.closest("[data-plan]");if(r&&view==="plan"){planOpen=planOpen===r.dataset.plan?null:r.dataset.plan;planMode=null;renderPlan();}
 });
@@ -756,12 +765,36 @@ function renderPlanBudgets(){
       await b.commit();setStatus(`${potLabel(pot)} set to ${money0(amount)} from ${ann?fyLabel(from):shortMonth(from)}`);}catch(err){fail(err);}};
 }
 function renderPlanOneoff(){
-  const l=PLANNED.filter(p=>p.status==="planned").sort((a,b)=>a.date.localeCompare(b.date));
-  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Future one-off payments and receipts (holiday deposits, big purchases, refunds due). They feed the forecast so a dip below the £10,000 floor is flagged early.</div>
-  <div class="card">${l.length?l.map(p=>`<div class="li"><div><div class="t">${esc(p.description)}</div><div class="d">${dateLong(p.date)} · ${esc(p.account)}${p.pot?" · "+esc(potLabel(p.pot)):""}</div><div class="row-btns"><button class="btn ghost sm" data-pp="paid" data-id="${p.id}">Paid</button><button class="btn warn sm" data-pp="cancelled" data-id="${p.id}">Cancel</button></div></div><div class="r num" style="font-weight:600;${p.direction==="in"?"color:var(--teal-dark)":""}">${p.direction==="in"?"+":"-"}${money(p.amount)}</div></div>`).join(""):`<div class="empty">No planned one-offs.</div>`}</div>
-  <div class="card"><div class="eyebrow">Add a one-off</div><form id="ppForm" class="form-grid"><label class="f full">Description<input id="ppDesc" required></label><label class="f">Date<input type="date" id="ppDate" value="${todayISO()}" required></label><label class="f">Amount (£)<input type="number" step="0.01" min="0" id="ppAmount" required></label><label class="f">Direction<select id="ppDir"><option value="out">Out</option><option value="in">In</option></select></label><label class="f">Account<select id="ppAccount">${opts(BANK)}</select></label><label class="f">Budget<select id="ppPot">${opts(POTS,"No budget")}</select></label><div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form></div>`;
-  $("ppForm").onsubmit=async e=>{e.preventDefault();try{await addDoc(collection(db,"planned_payments"),{description:$("ppDesc").value.trim(),date:$("ppDate").value,amount:parseFloat($("ppAmount").value)||0,direction:$("ppDir").value,account:$("ppAccount").value,pot:$("ppPot").value||null,status:"planned",createdAt:serverTimestamp()});setStatus("One-off added");}catch(err){fail(err);}};
+  const mk=curMK();
+  const fromPlan=PLAN.filter(p=>p.freq==="oneoff"&&p.start>=mk).map(p=>({src:"plan",id:p.id,date:occDate(p,p.start),name:p.name,account:p.account,to:p.kind==="transfer"?p.to:"",amount:Number(p.amount),dir:p.kind==="in"?"in":"out",off:p.end&&p.end<p.start,est:p.basis==="estimate",note:p.note}));
+  const fromPP=PLANNED.filter(p=>p.status==="planned").map(p=>({src:"pp",id:p.id,date:p.date,name:p.description,account:p.account,to:"",amount:Number(p.amount),dir:p.direction,pot:p.pot}));
+  const l=fromPlan.concat(fromPP).sort((a,b)=>a.date.localeCompare(b.date));
+  const row=x=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(x.name)}</div><div class="d">${dateLong(x.date)} · ${esc(x.account)}${x.to?" → "+esc(x.to):""}${x.pot?" · from the "+esc(potLabel(x.pot))+" budget":""}</div>
+    <div class="row-btns">${x.src==="pp"?`<button class="btn ghost sm" data-pp="paid" data-id="${x.id}">Paid</button><button class="btn warn sm" data-pp="cancelled" data-id="${x.id}">Cancel</button>`:x.off?`<button class="btn sm" data-restore1="${x.id}">Restore</button>`:`<button class="btn warn sm" data-del1="${x.id}">Delete</button><span class="small muted" style="align-self:center;">Ticked at month-end</span>`}</div></div>
+    <div class="r"><div class="num" style="font-weight:600;${x.dir==="in"?"color:var(--teal-dark)":""}">${x.dir==="in"?"+":"-"}${money(x.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${x.to?`<span class="chip grey">Transfer</span>`:x.pot?`<span class="chip">${esc(potLabel(x.pot))}</span>`:`<span class="chip grey">Payment</span>`}${x.est?`<span class="chip grey">Estimate</span>`:""}${x.off?`<span class="chip warn">Switched off</span>`:""}</div></div></div>`;
+  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Every future one-off in one list: payments, transfers (to an ISA, the mortgage, a pension or between you) and budget spends you know are coming. One-offs from a regular account also show under that account in Regular. All of them feed the forecast.</div>
+  <div class="card">${l.length?l.map(row).join(""):`<div class="empty">No one-offs coming up.</div>`}</div>
+  <div class="card"><div class="eyebrow">Add a one-off</div><form id="ppForm" class="form-grid">
+   <label class="f full">What<input id="ppDesc" required placeholder="e.g. Holiday deposit, extra overpayment"></label>
+   <label class="f">Kind<select id="ppKind"><option value="budget">Spend from a budget</option><option value="out">Payment out</option><option value="transfer">Transfer</option><option value="in">Money in</option></select></label>
+   <label class="f">Date<input type="date" id="ppDate" value="${todayISO()}" required></label>
+   <label class="f">Amount (£)<input type="number" step="0.01" min="0" id="ppAmount" required></label>
+   <label class="f">From / into account<select id="ppAccount">${opts(BANK)}</select></label>
+   <label class="f" id="ppPotL">Budget<select id="ppPot">${opts(POTS)}</select></label>
+   <label class="f hidden" id="ppToL">To<select id="ppTo">${opts(BANK.concat(DESTS))}</select></label>
+   <div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
+   <div class="note small" style="margin-top:8px;">A spend from a budget comes out of that budget, so the forecast doesn't count it twice. Payments, transfers and money in are ticked at month-end like regular payments.</div></div>`;
+  const sync=()=>{const k=$("ppKind").value;$("ppPotL").classList.toggle("hidden",k!=="budget");$("ppToL").classList.toggle("hidden",k!=="transfer");};$("ppKind").onchange=sync;sync();
+  $("ppForm").onsubmit=async e=>{e.preventDefault();const k=$("ppKind").value,date=$("ppDate").value,amount=parseFloat($("ppAmount").value)||0,account=$("ppAccount").value,name=$("ppDesc").value.trim();
+    try{if(k==="budget")await addDoc(collection(db,"planned_payments"),{description:name,date,amount,direction:"out",account,pot:$("ppPot").value,status:"planned",createdAt:serverTimestamp()});
+      else{const to=$("ppTo").value;if(k==="transfer"&&to===account)return setStatus("From and to must differ",true);const ref=doc(collection(db,"plan_items"));await setDoc(ref,{name,account,kind:k,to:k==="transfer"?to:"",amount,day:+date.slice(8),basis:"fixed",freq:"oneoff",months:[],start:mkOf(date),end:"",status:"confirmed",manual:true,note:"",series:ref.id,createdAt:serverTimestamp()});}
+      setStatus("One-off added");renderPlan();}catch(err){fail(err);}};
 }
+document.addEventListener("click",async e=>{
+  const d=e.target.closest("[data-del1]");if(d){const p=PLAN.find(x=>x.id===d.dataset.del1);if(p&&confirm(`Delete the one-off ${p.name}?`))try{await deleteDoc(doc(db,"plan_items",p.id));setStatus("Deleted");}catch(err){fail(err);}return;}
+  const r=e.target.closest("[data-restore1]");if(r){try{await updateDoc(doc(db,"plan_items",r.dataset.restore1),{end:""});setStatus("Restored");}catch(err){fail(err);}}
+});
+document.addEventListener("click",async e=>{const b=e.target.closest("[data-restore]");if(!b)return;e.stopPropagation();const p=PLAN.find(x=>x.id===b.dataset.restore);if(!p||!confirm(`Restore ${p.name}? It will be expected again from ${shortMonth(addMonths(p.end,1))}.`))return;try{await updateDoc(doc(db,"plan_items",p.id),{end:""});setStatus("Restored "+p.name);}catch(err){fail(err);}});
 document.addEventListener("click",async e=>{const b=e.target.closest("[data-pp]");if(!b)return;try{await updateDoc(doc(db,"planned_payments",b.dataset.id),{status:b.dataset.pp});}catch(err){fail(err);}});
 
 
@@ -798,7 +831,7 @@ function forecast(fromOpening){
       if(t.type==="transfer"){if(ISAS.includes(t.account))isas[t.account]-=t.value;else unitAdd(t.account,-t.value);dest(t.toAccount,t.value,t.account);}
       else unitAdd(t.account,t.direction==="in"?t.value:-t.value);});
     // planned one-offs
-    PLANNED.filter(x=>x.status==="planned"&&x.date>prevEnd&&x.date<=end).forEach(x=>unitAdd(x.account,x.direction==="in"?x.amount:-x.amount));
+    PLANNED.filter(x=>x.status==="planned"&&!x.pot&&x.date>prevEnd&&x.date<=end).forEach(x=>unitAdd(x.account,x.direction==="in"?x.amount:-x.amount));
     // budgets still to be spent (monthly pots: what's left this month; annual pots: what's left in the year, spread evenly)
     const fy=fyStart(mk), spentTo=fromOpening?st.date:today;
     ["dayToDay","riyaan"].forEach(k=>{const spent=TX.filter(t=>t.monthKey===mk&&t.date<=spentTo).reduce((s,t)=>s+(t.type==="spend"&&t.pot===k?(t.direction==="out"?t.value:-t.value):0),0);
