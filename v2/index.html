@@ -269,6 +269,8 @@ const ordinal=d=>d+([1,21,31].includes(d)?"st":[2,22].includes(d)?"nd":[3,23].in
 /* ================= state ================= */
 let TX=[],BUDGETS={},ANNUAL={},PLAN=[],ACTIONS=[],PLANNED=[],RULES=[],ME={},OPENING=null,BASELINE=null;
 let view="home";
+const LOADED=new Set(),NEEDED=["transactions","budgets","annualBudgets","plan_items","planned_payments","budget_rules","month_ends","opening","baseline"];
+const BASELINE_V=2;
 const FOLD=store.get("v2.fold",{});
 function fold(key,title,sub,status,defOpen,body,inner){const open=FOLD[key]??defOpen;return`<details class="fold${inner?" inner":""}" data-fold="${key}"${open?" open":""}><summary><div class="ttl">${title}${sub?`<small>${sub}</small>`:""}</div><div class="st">${status||""}</div></summary><div class="fb">${body}</div></details>`;}
 document.addEventListener("toggle",e=>{const d=e.target;if(d.dataset&&d.dataset.fold){FOLD[d.dataset.fold]=d.open;store.set("v2.fold",FOLD);}},true);
@@ -421,7 +423,7 @@ onAuthStateChanged(auth,async u=>{if(!u)return;setStatus("");try{await ensureSee
 signInAnonymously(auth).catch(e=>setStatus("Connection error: "+e.message,true));
 function listen(){
   const err=e=>setStatus("Data error: "+e.message,true);
-  const col=(n,f)=>onSnapshot(collection(db,n),s=>{f(s.docs.map(d=>({id:d.id,...d.data()})));render();},err);
+  const col=(n,f)=>onSnapshot(collection(db,n),s=>{f(s.docs.map(d=>({id:d.id,...d.data()})));LOADED.add(n);ensureBaseline();render();},err);
   col("transactions",l=>TX=l.map(norm));
   col("budgets",l=>{BUDGETS={};l.forEach(d=>BUDGETS[d.id]=d);});
   col("annualBudgets",l=>{ANNUAL={};l.forEach(d=>ANNUAL[d.id]=d);});
@@ -430,8 +432,8 @@ function listen(){
   col("planned_payments",l=>PLANNED=l);
   col("budget_rules",l=>{RULES=l;syncClassicBudget();});
   col("month_ends",l=>{ME={};l.forEach(d=>ME[d.id]=d);});
-  onSnapshot(doc(db,"v2meta","opening"),s=>{OPENING=s.exists()?s.data():null;render();},err);
-  onSnapshot(doc(db,"v2meta","baseline"),s=>{BASELINE=s.exists()?s.data():false;ensureBaseline();render();},err);
+  onSnapshot(doc(db,"v2meta","opening"),s=>{OPENING=s.exists()?s.data():null;LOADED.add("opening");ensureBaseline();render();},err);
+  onSnapshot(doc(db,"v2meta","baseline"),s=>{BASELINE=s.exists()?s.data():false;LOADED.add("baseline");ensureBaseline();render();},err);
 }
 
 /* ================= navigation ================= */
@@ -718,8 +720,8 @@ document.addEventListener("click",async e=>{
   if(e.target.closest("[data-pcancel]")){planMode=null;adding=false;renderPlan();return;}
   const pm=e.target.closest("[data-pm]");
   if(pm){const p=PLAN.find(x=>x.id===planOpen);if(pm.dataset.pm==="delete"){if(!confirm(`Delete the one-off ${p.name}?`))return;try{await deleteDoc(doc(db,"plan_items",p.id));setStatus("Deleted "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
-    if(pm.dataset.pm==="restore"){try{await updateDoc(doc(db,"plan_items",p.id),{end:""});setStatus("Restored "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
-    if(pm.dataset.pm==="confirm"){try{await updateDoc(doc(db,"plan_items",p.id),{status:"confirmed"});}catch(err){fail(err);}return;}planMode=pm.dataset.pm;renderPlan();return;}
+    if(pm.dataset.pm==="restore"){try{await updateDoc(doc(db,"plan_items",p.id),{end:"",updatedAt:serverTimestamp()});setStatus("Restored "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
+    if(pm.dataset.pm==="confirm"){try{await updateDoc(doc(db,"plan_items",p.id),{status:"confirmed",updatedAt:serverTimestamp()});}catch(err){fail(err);}return;}planMode=pm.dataset.pm;renderPlan();return;}
   if(e.target.closest("[data-noclose]"))return;
   const r=e.target.closest("[data-plan]");if(r&&view==="plan"){planOpen=planOpen===r.dataset.plan?null:r.dataset.plan;planMode=null;renderPlan();}
 });
@@ -737,7 +739,7 @@ document.addEventListener("submit",async e=>{
   const d=Object.fromEntries(new FormData(f).entries()),mode=f.dataset.pform,p=PLAN.find(x=>x.id===f.dataset.id);
   const day=d.day==="lwd"?"lwd":(parseInt(d.day)||null);
   try{
-    if(mode==="end"){await updateDoc(doc(db,"plan_items",p.id),{end:d.last});}
+    if(mode==="end"){await updateDoc(doc(db,"plan_items",p.id),{end:d.last,updatedAt:serverTimestamp()});}
     else if(mode==="change"){await changePlan(p,d.from,{name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim()});}
     else if(mode==="replace"){await changePlan(p,d.from,{name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim(),status:"confirmed",replaces:p.name},true);}
     else{const months=(d.months||"").split(/[ ,]+/).map(Number).filter(n=>n>=1&&n<=12);if((d.freq==="annual"||d.freq==="sixmonthly")&&!months.length)return setStatus("Enter the month(s), e.g. 4,10",true);
@@ -792,9 +794,9 @@ function renderPlanOneoff(){
 }
 document.addEventListener("click",async e=>{
   const d=e.target.closest("[data-del1]");if(d){const p=PLAN.find(x=>x.id===d.dataset.del1);if(p&&confirm(`Delete the one-off ${p.name}?`))try{await deleteDoc(doc(db,"plan_items",p.id));setStatus("Deleted");}catch(err){fail(err);}return;}
-  const r=e.target.closest("[data-restore1]");if(r){try{await updateDoc(doc(db,"plan_items",r.dataset.restore1),{end:""});setStatus("Restored");}catch(err){fail(err);}}
+  const r=e.target.closest("[data-restore1]");if(r){try{await updateDoc(doc(db,"plan_items",r.dataset.restore1),{end:"",updatedAt:serverTimestamp()});setStatus("Restored");}catch(err){fail(err);}}
 });
-document.addEventListener("click",async e=>{const b=e.target.closest("[data-restore]");if(!b)return;e.stopPropagation();const p=PLAN.find(x=>x.id===b.dataset.restore);if(!p||!confirm(`Restore ${p.name}? It will be expected again from ${shortMonth(addMonths(p.end,1))}.`))return;try{await updateDoc(doc(db,"plan_items",p.id),{end:""});setStatus("Restored "+p.name);}catch(err){fail(err);}});
+document.addEventListener("click",async e=>{const b=e.target.closest("[data-restore]");if(!b)return;e.stopPropagation();const p=PLAN.find(x=>x.id===b.dataset.restore);if(!p||!confirm(`Restore ${p.name}? It will be expected again from ${shortMonth(addMonths(p.end,1))}.`))return;try{await updateDoc(doc(db,"plan_items",p.id),{end:"",updatedAt:serverTimestamp()});setStatus("Restored "+p.name);}catch(err){fail(err);}});
 document.addEventListener("click",async e=>{const b=e.target.closest("[data-pp]");if(!b)return;try{await updateDoc(doc(db,"planned_payments",b.dataset.id),{status:b.dataset.pp});}catch(err){fail(err);}});
 
 
@@ -853,9 +855,13 @@ function forecast(fromOpening){
 let FC_CACHE=null,FC_KEY="";
 function liveForecast(){const k=[TX.length,PLAN.length,PLANNED.length,RULES.length,Object.keys(ME).length,closedList().length,JSON.stringify(PLAN.map(p=>[p.amount,p.start,p.end])).length,todayISO()].join("|");if(k!==FC_KEY||!FC_CACHE){FC_CACHE=forecast(false);FC_KEY=k;}return FC_CACHE;}
 async function ensureBaseline(){ // the 17 October plan, saved once so progress is measured against what was agreed
-  if(BASELINE!==false||!PLAN.length||!OPENING)return;
+  // only once every collection has loaded (v1 was saved too early, before the annual budgets arrived, so it is rebuilt once)
+  if(!NEEDED.every(n=>LOADED.has(n))||!PLAN.length||!OPENING||BASELINE===null||BASELINE===undefined)return;
+  if(BASELINE&&(BASELINE.v||1)>=BASELINE_V)return;
+  if(BASELINE&&BASELINE.building)return;
   const f=forecast(true),rows={};f.rows.forEach(r=>rows[r.mk]={float:r.float,joint:r.joint,isaTot:r.isaTot,penTot:r.penTot,mort:r.mort,nw:r.nw,isas:r.isas});
-  BASELINE={};try{await setDoc(doc(db,"v2meta","baseline"),{name:"17 October 2026 plan",createdAt:serverTimestamp(),horizon:S.horizon,rows});}catch(e){BASELINE=false;}
+  const prev=BASELINE;BASELINE={building:true};
+  try{await setDoc(doc(db,"v2meta","baseline"),{name:"17 October 2026 plan",v:BASELINE_V,createdAt:serverTimestamp(),horizon:S.horizon,rows,rebuiltFrom:prev?"v1 (saved before budgets loaded)":null});}catch(e){BASELINE=prev;}
 }
 function vsPlan(actual,plan,higherIsBetter=true){const d=r2(actual-plan),good=higherIsBetter?d>=0:d<=0,pct=plan?Math.abs(d)/Math.abs(plan):0;
   const chip=pct<0.01?`<span class="chip ok">On plan</span>`:good?`<span class="chip ok">Ahead ${money0(Math.abs(d))}</span>`:`<span class="chip warn">Behind ${money0(Math.abs(d))}</span>`;return{d,chip};}
@@ -913,6 +919,14 @@ function renderPlanForecast(){
   ${fold("fc-2030","July 2030: on course?",B?`Net worth ${money0(end.nw)} vs plan ${money0(be.nw)}`:"Saving the 17 October plan...",B?vsPlan(end.nw,be.nw).chip:"",true,
     `${line("Net worth (excluding the house)",end.nw,be?.nw)}${line("Mortgage left",end.mort,be?.mort,false)}${line("ISAs",end.isaTot,be?.isaTot)}${line("Pensions",end.penTot,be?.penTot)}${line("Float (Hersh + Sonali)",end.float,be?.float)}${line("Joint",end.joint,be?.joint)}
      ${lc&&lcRow?`<div class="eyebrow" style="margin-top:12px;">So far, at the ${monthLabel(lc.id)} month-end</div><div class="calc"><span>Float vs plan</span><span class="num">${money(lc.float-lcRow.float,true)}</span><span>Day-to-day and Riyaan under (+) or over (-) budget</span><span class="num">${money(budgetVar,true)}</span><span>Pay vs plan</span><span class="num">${money(incomeVar,true)}</span><span>ISAs vs plan (includes market moves)</span><span class="num">${money(Object.values(lc.isas||{}).reduce((s,v)=>s+Number(v||0),0)-lcRow.isaTot,true)}</span></div>`:`<div class="note" style="margin-top:8px;">After your first month-end this also shows where you are against the plan today and why: spending against budget, pay against plan, and market moves on the ISAs.</div>`}`)}
+  ${(()=>{if(!B||!BASELINE.createdAt)return"";const t0=BASELINE.createdAt.seconds||0,ts=x=>Math.max(x.createdAt?.seconds||0,x.updatedAt?.seconds||0),when=x=>new Date(ts(x)*1000).toLocaleString("en-GB",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"});
+    const ch=PLAN.filter(p=>ts(p)>t0).map(p=>({w:ts(p),t:`${esc(p.name)}: ${(p.createdAt?.seconds||0)>t0?"added":"changed"} (${money(p.amount)}, ${schedText(p).toLowerCase()})`,d:when(p)}))
+      .concat(PLANNED.filter(p=>(p.createdAt?.seconds||0)>t0).map(p=>({w:ts(p),t:`One-off ${esc(p.description)} ${money(p.amount)} on ${dateShort(p.date)}${p.status!=="planned"?" ("+p.status+")":""}`,d:when(p)})))
+      .concat(RULES.filter(r=>r.updatedAt&&r.updatedAt.seconds>t0).map(r=>({w:r.updatedAt.seconds,t:`${potLabel(r.pot)} budget set to ${money0(r.amount)} from ${r.from}`,d:when(r)}))).sort((a,b)=>b.w-a.w);
+    const gaps=[];let prev=0;rows.forEach(r=>{const b=B[r.mk];if(!b)return;const g=r.float-b.float;if(Math.abs(g-prev)>=250)gaps.push({mk:r.mk,step:g-prev,g});prev=g;});
+    return fold("fc-diff","What's different from the plan",ch.length?`${ch.length} change${ch.length>1?"s":""} since it was saved`:"No changes since it was saved",ch.length?`<span class="chip warn">${ch.length}</span>`:"",false,
+     `${ch.length?`<div class="eyebrow">Changes since the plan was saved</div>${ch.map(c=>`<div class="li"><div><div class="t" style="font-weight:400;">${c.t}</div><div class="d">${c.d}</div></div></div>`).join("")}`:`<div class="note">Nothing in Plan has been added or changed since the plan was saved.</div>`}
+      ${gaps.length?`<div class="eyebrow" style="margin-top:12px;">Where the float moves away from the plan</div><div class="calc">${gaps.slice(0,12).map(x=>`<span>${monthLabel(x.mk)}</span><span class="num">${money(x.step,true)} (gap ${money(x.g,true)})</span>`).join("")}</div>`:""}`);})()}
   ${recs.length?fold("fc-recs","Recommended moves",`${recs.length} from the forecast`,`<span class="chip warn">${recs.length}</span>`,true,recs.map((r,i)=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(r.text)}</div><div class="d">${esc(r.why)}</div><div class="row-btns"><button class="btn sm" data-rec="${i}">Add to Plan for ${shortMonth(r.mk)}</button></div></div></div>`).join("")):""}
   ${fold("fc-float","Float",`Lowest ${money0(low.float)} in ${shortMonth(low.mk)}`,low.float<S.floor?`<span class="chip warn">Below floor</span>`:`<span class="chip ok">Above floor</span>`,true,lineChart([{name:"Forecast",vals:rows.map(r=>r.float),color:"#1D3461"},{name:"Plan",vals:pl("float"),color:"#6B7280",dash:"5 4",w:1.5},{name:"Joint",vals:rows.map(r=>r.joint),color:"#8FA3C8",w:1.5}],lab,{floor:S.floor,label:"Float forecast"}))}
   ${fold("fc-nw","Net worth (excluding the house) and mortgage",`Mortgage ${money0(end.mort)} left in Jul 2030`,"",false,lineChart([{name:"Net worth",vals:rows.map(r=>r.nw),color:"#1D3461"},{name:"Plan",vals:pl("nw"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Net worth"})+lineChart([{name:"Mortgage",vals:rows.map(r=>r.mort),color:"#7A5300"},{name:"Plan",vals:pl("mort"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Mortgage"}))}
@@ -1058,10 +1072,10 @@ function wireME(mid,c){
     if(d.scope==="forward"&&o)try{await changePlan(o.p,addMonths(o.mk,1),{amount:amt});}catch(err){fail(err);}
     meOverride=null;renderME();});
   $$("[data-memiss]").forEach(b=>b.onclick=async()=>{const key=b.dataset.memiss,o=c.occ.find(x=>x.key===key);await meItem(mid,key,{status:"missing",amount:0});
-    if(o&&o.p.freq!=="oneoff"&&confirm(`${o.p.name} didn't arrive. Has it ended? OK ends it from ${shortMonth(o.mk)}; Cancel keeps it as a one-month miss.`)){try{await updateDoc(doc(db,"plan_items",o.p.id),{end:addMonths(o.mk,-1)});}catch(err){fail(err);}}});
+    if(o&&o.p.freq!=="oneoff"&&confirm(`${o.p.name} didn't arrive. Has it ended? OK ends it from ${shortMonth(o.mk)}; Cancel keeps it as a one-month miss.`)){try{await updateDoc(doc(db,"plan_items",o.p.id),{end:addMonths(o.mk,-1),updatedAt:serverTimestamp()});}catch(err){fail(err);}}});
   $("meTickAll")?.addEventListener("click",()=>{const items={};c.occ.forEach(o=>{if(!(m.items||{})[o.key]&&o.p.basis!=="estimate")items[o.key]={status:"ticked",amount:null};});meSave(mid,{runDate:c.runDate,items});});
   $$("[data-feedunit]").forEach(b=>b.onclick=()=>{const u=UNITS.find(x=>x.key===b.dataset.feedunit);FL.period="custom";FL.from=addDays(c.op.date,1);FL.to=c.runDate;FL.account=u.accounts.length===1?u.accounts[0]:"";$("flPeriod").value="custom";$("flFrom").value=FL.from;$("flToDate").value=FL.to;$("flAccount").value=FL.account;go("feed");});
-  $("meSetTopUp")?.addEventListener("click",async e=>{const cash=+e.target.dataset.cash;const p=PLAN.find(x=>x.role==="pensionTopUp");try{if(p)await updateDoc(doc(db,"plan_items",p.id),{amount:cash});const a=ACTIONS.find(x=>x.id==="a-pension");await setDoc(doc(db,"actions","a-pension"),{text:`Pay ${money(cash)} into the personal pension (gross ${money(cash/0.8)} for Self Assessment)`,dueDate:`${+taxYearOf(mid).slice(0,4)+1}-03-15`,owner:"Hersh",amount:cash,reason:"Keeps adjusted net income at or under £99,000; must land before 5 April",status:a?.status||"todo",source:"payslip"},{merge:true});setStatus("Pension top-up set to "+money(cash));}catch(err){fail(err);}});
+  $("meSetTopUp")?.addEventListener("click",async e=>{const cash=+e.target.dataset.cash;const p=PLAN.find(x=>x.role==="pensionTopUp");try{if(p)await updateDoc(doc(db,"plan_items",p.id),{amount:cash,updatedAt:serverTimestamp()});const a=ACTIONS.find(x=>x.id==="a-pension");await setDoc(doc(db,"actions","a-pension"),{text:`Pay ${money(cash)} into the personal pension (gross ${money(cash/0.8)} for Self Assessment)`,dueDate:`${+taxYearOf(mid).slice(0,4)+1}-03-15`,owner:"Hersh",amount:cash,reason:"Keeps adjusted net income at or under £99,000; must land before 5 April",status:a?.status||"todo",source:"payslip"},{merge:true});setStatus("Pension top-up set to "+money(cash));}catch(err){fail(err);}});
   $("meClose")?.addEventListener("click",async()=>{
     const who=prompt("Closing the month. Who is closing? (Hersh or Sonali)","Hersh");if(!who)return;
     try{const b=writeBatch(db);
