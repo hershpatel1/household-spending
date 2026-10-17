@@ -14,7 +14,7 @@ const check = (name, ok, detail = '') => { console.log(`${ok ? 'PASS' : 'FAIL'} 
 
 async function scenario(name, isoTime, fn) {
   const browser = await chromium.launch(launch);
-  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -129,6 +129,17 @@ await scenario('Month-end defaults to the last day of the month; work back from 
   await fill('[data-metoday="Hersh Credit"]', 1740.85); await page.waitForTimeout(200); await openAll();
   const s = await store();
   check('card worked back to 31 Oct (today 1,740.85 owed less the 50 logged in Nov)', s.month_ends['2026-10']?.balances?.['Hersh Credit'] === -1690.85, JSON.stringify(s.month_ends['2026-10']?.balances));
+});
+
+await scenario('Export everything, and the 6-monthly reminder', '2026-10-18T10:00:00', async ({ page, store, go }) => {
+  check('export reminder shows when never exported', (await page.textContent('#v-home')).includes('Export a backup of everything'));
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-fold=home-actions] [data-export]')]);
+  const file = await dl.path(); const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+  check('export has every collection and the forecast', ['transactions', 'plan_items', 'month_ends', 'budget_rules'].every(k => data.collections[k]) && data.forecast?.rows?.length > 40 && data.opening?.balances);
+  check('timestamps are readable dates', typeof Object.values(data.collections.plan_items)[0].createdAt === 'string');
+  await page.waitForTimeout(200); await go('home');
+  check('reminder clears after exporting', !(await page.textContent('#v-home')).includes('Export a backup of everything'));
+  check('last export recorded', !!(await store()).v2meta.exports?.lastAt);
 });
 
 await scenario('ANI: early pension payment reduces the top-up', '2026-11-03T20:00:00', async ({ page, fill, openAll, go }) => {

@@ -281,7 +281,7 @@ const ordinal=d=>d+([1,21,31].includes(d)?"st":[2,22].includes(d)?"nd":[3,23].in
 
 document.getElementById("status").addEventListener("click",()=>setStatus(""));
 /* ================= state ================= */
-let TX=[],BUDGETS={},ANNUAL={},PLAN=[],ACTIONS=[],PLANNED=[],RULES=[],ME={},OPENING=null,BASELINE=null;
+let TX=[],BUDGETS={},ANNUAL={},PLAN=[],ACTIONS=[],PLANNED=[],RULES=[],ME={},OPENING=null,BASELINE=null,EXPORTS=null;
 let view="home";
 // a transaction dated on or before the last month-end's date belongs to a closed month and can't change without reopening it
 const lockedTo=()=>{const l=closedList().filter(m=>!m.setup);return l.length?l[l.length-1].runDate:null;}; // the set-up month is never reconciled, so it never locks
@@ -461,6 +461,7 @@ function listen(){
   col("budget_rules",l=>{RULES=l;});
   col("month_ends",l=>{ME={};l.forEach(d=>ME[d.id]=d);});
   onSnapshot(doc(db,"v2meta","opening"),s=>{OPENING=s.exists()?s.data():null;LOADED.add("opening");ensureBaseline();render();},err);
+  onSnapshot(doc(db,"v2meta","exports"),s=>{EXPORTS=s.exists()?s.data():{};render();},err);
   onSnapshot(doc(db,"v2meta","baseline"),s=>{BASELINE=s.exists()?s.data():false;LOADED.add("baseline");ensureBaseline();render();},err);
 }
 
@@ -543,6 +544,23 @@ function potCard(label,spent,budget,sub){
   const pct=budget>0?Math.min(100,Math.max(0,spent/budget*100)):0,rem=budget-spent,over=budget>0&&spent>budget;
   return`<div class="card pot"><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track"><div class="fill ${over?"over":""}" style="width:${pct}%"></div></div><div class="rem ${rem<0?"neg":""}">${rem<0?"Over by "+money(-rem):money(rem)+" left"}</div></div>`;
 }
+const EXPORT_EVERY_DAYS=182;
+function exportDue(){const last=EXPORTS&&EXPORTS.lastAt;return !last||daysBetween(last.slice(0,10),todayISO())>=EXPORT_EVERY_DAYS;}
+function plain(v){ // Firestore timestamps to ISO strings, everything else as is
+  if(v&&typeof v==="object"){if(typeof v.toDate==="function"||(typeof v.seconds==="number"&&Object.keys(v).every(k=>k==="seconds"||k==="nanoseconds")))return new Date((v.seconds||0)*1000).toISOString();if(Array.isArray(v))return v.map(plain);const o={};for(const k in v)o[k]=plain(v[k]);return o;}return v;}
+async function exportEverything(){
+  const byId=l=>Object.fromEntries(l.map(({id,...r})=>[id,plain(r)]));
+  let fc=null;try{const f=liveForecast();fc={start:plain(f.start),shares:f.shares,rows:f.rows};}catch(e){}
+  const data={app:"household-money",exportVersion:1,exportedAt:new Date().toISOString(),exportedOn:todayISO(),
+    settings:{floor:S.floor,personTarget:S.personTarget,aniTarget:S.aniTarget,mortgageRate:S.mortgageRate,horizon:S.horizon,rates:S.rates,workplace:S.workplace,salarySacrifice:{from:S.sacStart,pct:S.sacPct}},
+    collections:{transactions:byId(TX),budgets:plain(BUDGETS),annualBudgets:plain(ANNUAL),plan_items:byId(PLAN),actions:byId(ACTIONS),planned_payments:byId(PLANNED),budget_rules:byId(RULES),month_ends:plain(ME)},
+    opening:plain(OPENING),savedPlan:plain(BASELINE),forecast:fc};
+  const blob=new Blob([JSON.stringify(data,null,1)],{type:"application/json"}),a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);a.download=`household-money-export-${todayISO()}.json`;document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+  try{await setDoc(doc(db,"v2meta","exports"),{lastAt:new Date().toISOString(),count:((EXPORTS&&EXPORTS.count)||0)+1},{merge:true});}catch(e){logError("export",e.message);}
+  setStatus("Exported. Keep the file somewhere safe, and send it to Claude for a review.");
+}
+document.addEventListener("click",e=>{if(e.target.closest("[data-export]"))exportEverything();});
 function openPotCard(fy){
   const mk=curMK(),fyTx=TX.filter(x=>fyStart(x.monthKey)===fy),spentFY=potSpend(fyTx,"householdInvestment"),spentM=potSpend(TX.filter(x=>x.monthKey===mk),"householdInvestment");
   const lc=lastClose(),j=lc?lc.balances?.Joint:(OPENING||SEED_OPENING).balances.Joint,jd=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
@@ -565,7 +583,8 @@ function renderHome(){
   const oneoffs=PLAN.filter(p=>p.freq==="oneoff"&&p.status!=="paid"&&!(p.end&&p.end<p.start)).map(p=>({src:"plan",id:p.id,date:occDate(p,p.start),name:p.name,account:p.account,to:p.kind==="transfer"?p.to:"",amount:Number(p.amount)}))
     .concat(PLANNED.filter(p=>p.status==="planned").map(p=>({src:"pp",id:p.id,date:p.date,name:p.description,account:p.account,to:"",amount:Number(p.amount),pot:p.pot}))).filter(x=>x.date<=horizon).sort((a,b)=>a.date.localeCompare(b.date));
   const oneoffRow=x=>`<div class="li"><div style="min-width:0;flex:1;"><div class="t">Pay ${esc(x.name)}</div><div class="d">${esc(x.account)}${x.to?" → "+esc(accLabel(x.to)):""}${x.pot?" · "+esc(potLabel(x.pot))+" budget":""} · one-off</div><div class="row-btns"><button class="btn sm" data-pay="${x.src}:${x.id}">Paid</button></div>${payOpen===x.src+":"+x.id?paySheet(x):""}</div><div class="r">${x.date<t?`<span class="chip warn">Overdue</span>`:`<span class="chip">${dateShort(x.date)}</span>`}<div class="num small" style="margin-top:4px;">${money(x.amount)}</div></div></div>`;
-  const merged=shown.map(a=>({d:a.dueDate,h:actionRow(a)})).concat(oneoffs.map(x=>({d:x.date,h:oneoffRow(x)}))).sort((a,b)=>a.d.localeCompare(b.d));
+  const expRow=exportDue()?[{d:t,h:`<div class="li"><div style="min-width:0;flex:1;"><div class="t">Export a backup of everything</div><div class="d">Every 6 months${EXPORTS&&EXPORTS.lastAt?` · last ${dateShort(EXPORTS.lastAt.slice(0,10))}`:" · not done yet"}. Save the file somewhere safe; it is also what you give Claude for a financial review.</div><div class="row-btns"><button class="btn sm" data-export>Export now</button></div></div><div class="r"><span class="chip warn">Due</span></div></div>`}]:[];
+  const merged=expRow.concat(shown.map(a=>({d:a.dueDate,h:actionRow(a)}))).concat(oneoffs.map(x=>({d:x.date,h:oneoffRow(x)}))).sort((a,b)=>a.d.localeCompare(b.d));
   const mtx=TX.filter(x=>x.monthKey===mk), fy=fyStart(mk), fyTx=TX.filter(x=>fyStart(x.monthKey)===fy);
   const fl=lc?float(lc.balances):float((OPENING||SEED_OPENING).balances);
   const flDate=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
@@ -589,6 +608,7 @@ function renderHome(){
   <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")+annualBudget("holidays",fy)-potSpend(fyTx,"holidays"))} left across both`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy))}</div>`)}</div>
   <div class="section">${openPotCard(fy)}</div>
 `;
+  (()=>{const d=document.createElement("div");d.className="section";d.innerHTML=fold("home-data","Your data",EXPORTS&&EXPORTS.lastAt?`Last exported ${dateShort(EXPORTS.lastAt.slice(0,10))}`:"Not exported yet","",false,`<div class="note">One file with everything: transactions, plan, budgets, month-ends, the saved plan and the forecast. Use it as a backup, or upload it to Claude for a financial review.</div><div class="actions-row"><button class="btn" data-export>Export everything</button></div>`);$("v-home").appendChild(d);})();
   (()=>{let l=[];try{l=JSON.parse(localStorage.getItem(ERRLOG_KEY)||"[]");}catch(e){}if(!l.length)return;
     const d=document.createElement("div");d.className="section";d.innerHTML=fold("home-diag","App diagnostics",`${l.length} recent error${l.length>1?"s":""}`,"",false,`<div class="note small">If something misbehaves, copy this and send it to Claude.</div><pre id="diagText" style="white-space:pre-wrap;font-size:11px;background:var(--bg-2);padding:8px;border-radius:8px;max-height:220px;overflow:auto;">${esc(l.map(x=>`${x.at} [${x.kind}${x.view?" · "+x.view:""}] ${x.msg}`).join("\n"))}</pre><div class="actions-row"><button class="btn ghost sm" id="diagCopy">Copy</button><button class="btn ghost sm" id="diagClear">Clear</button></div>`);
     $("v-home").appendChild(d);$("diagCopy").onclick=()=>{try{navigator.clipboard.writeText($("diagText").textContent);setStatus("Copied");}catch(e){}};$("diagClear").onclick=()=>{try{localStorage.removeItem(ERRLOG_KEY);}catch(e){}renderHome();};})();
@@ -1043,8 +1063,12 @@ function aniCalc(mid,ps,who){
   const ytd=Number(ps.ytd)||0,per=Number(ps.period)||0,ty=taxYearOf(mid),endMk=(+ty.slice(0,4)+1)+"-03";let rest=0,mk=mid;
   while((mk=addMonths(mk,1))<=endMk)rest+=per*(who.sac&&mk>=S.sacStart&&mid<S.sacStart?(1-S.sacPct):1);
   const paid=pensionPaid(who,ty).gross;
-  const proj=ytd+rest-paid,gross=Math.max(0,proj-S.aniTarget);
-  return{rest:r2(rest),paid:r2(paid),proj:r2(proj),gross:r2(gross),cash:r2(gross*0.8)};
+  // dividends paid to this person in the tax year (actual if ticked at a month-end, otherwise the plan) are taxable income
+  const isDiv=x=>x.role==="dividend"||/dividend/i.test(x.name||x.retailer||x.description||"");
+  let divs=TX.filter(t=>t.type==="income"&&isDiv(t)&&ownerOf(t.account)===who.label&&t.date>=ty+"-06"&&t.date<=(+ty.slice(0,4)+1)+"-04-05").reduce((s,t)=>s+t.value,0);
+  PLAN.filter(p=>p.kind==="in"&&isDiv(p)&&p.status!=="paid"&&ownerOf(p.account)===who.label).forEach(p=>{for(let m=ty;m<=addMonths(ty,11);m=addMonths(m,1))if(planDue(p,m)){const k=`${p.id}@${m}`,it=Object.values(ME).map(x=>x.items?.[k]).find(Boolean);divs+=it?(it.status==="missing"||it.status==="notyet"?0:it.amount!=null?Number(it.amount):Number(p.amount)):Number(p.amount);}});
+  const proj=ytd+rest+divs-paid,gross=Math.max(0,proj-S.aniTarget);
+  return{rest:r2(rest),divs:r2(divs),paid:r2(paid),proj:r2(proj),gross:r2(gross),cash:r2(gross*0.8)};
 }
 function nextMoves(mid){
   const a=addMonths(mid,1),b=addMonths(mid,2),out=[];
@@ -1058,7 +1082,7 @@ function nextMoves(mid){
       else if(Number(prev.amount)!==Number(p.amount)&&!p.manual)out.push({id:`nm-${p.id}`,text:`${p.name} changes from ${money(prev.amount)} to ${money(p.amount)} in ${shortMonth(p.start)}${p.kind==="transfer"?": update the standing order":""}`,dueDate:addDays(occDate(p,p.start),-10),amount:p.amount});
     }
     if(p.end&&p.end>=mid&&p.end<=a&&p.freq!=="oneoff"&&!p.endAction&&!nextOf(p))out.push({id:`nm-end-${p.id}`,text:`Check ${p.name} stops after ${shortMonth(p.end)}${p.kind==="transfer"?" (cancel the standing order if needed)":""}`,dueDate:addDays(occDate(p,p.end),1)});
-    if(p.manual&&planDue(p,a))out.push({id:`nm-pay-${p.id}-${a}`,text:`Pay ${p.name}: about ${money(p.amount)} from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:occDate(p,a),amount:p.amount});
+    if(p.manual&&planDue(p,a))out.push({id:`nm-pay-${p.id}-${a}`,text:(p.role==="dividend"||/dividend/i.test(p.name))&&p.kind==="in"?`Declare and pay ${p.name}: ${money(p.amount)} into ${p.account} in December, before the company year end on 31 December (dividend allowance; board minute and enough profit needed)`:`Pay ${p.name}: about ${money(p.amount)} from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:(p.role==="dividend"||/dividend/i.test(p.name))&&p.kind==="in"?`${a}-10`:occDate(p,a),amount:p.amount});
   });
   PLANNED.filter(x=>x.status==="planned"&&x.date>=a+"-01"&&x.date<=b+"-31").forEach(x=>out.push({id:`nm-pp-${x.id}`,text:`One-off: ${x.description} ${money(x.amount)} from ${x.account}`,dueDate:x.date,amount:x.amount}));
   return out.sort((x,y)=>x.dueDate.localeCompare(y.dueDate));
@@ -1138,7 +1162,7 @@ function renderME(){
   // step 2: payslips
   const payslip=who=>{const ps=m[who.field]||{},ani=aniCalc(mid,ps,who),ty=taxYearOf(mid),payOcc=c.occ.find(o=>o.p.role===who.role);
     const done=ps.ytd!=null&&ps.period!=null&&ps.net!=null;
-    const res=ps.ytd&&ps.period?`<div class="calc"><span>Taxable pay to date</span><span class="num">${money(ps.ytd)}</span><span>Rest of ${fyLabel(ty)}${who.sac?` (salary sacrifice from ${shortMonth(S.sacStart)})`:""}</span><span class="num">${money(ani.rest)}</span><span>Less personal pension paid so far (${money(pensionPaid(who,ty).cash)} cash)</span><span class="num">${money(-ani.paid)}</span><span class="tot">Projected adjusted net income</span><span class="num tot">${money(ani.proj)}</span></div>
+    const res=ps.ytd&&ps.period?`<div class="calc"><span>Taxable pay to date</span><span class="num">${money(ps.ytd)}</span><span>Rest of ${fyLabel(ty)}${who.sac?` (salary sacrifice from ${shortMonth(S.sacStart)})`:""}</span><span class="num">${money(ani.rest)}</span>${ani.divs?`<span>Director dividends this tax year</span><span class="num">${money(ani.divs)}</span>`:""}<span>Less personal pension paid so far (${money(pensionPaid(who,ty).cash)} cash)</span><span class="num">${money(-ani.paid)}</span><span class="tot">Projected adjusted net income</span><span class="num tot">${money(ani.proj)}</span></div>
       ${ani.gross>0?`<div class="gap bad"><span>Over £99,000 by</span><span class="num">${money(ani.gross)}</span></div><div class="calc"><span>Still to pay into the personal pension (cash)</span><span class="num tot">${money(ani.cash)}</span><span>Gross, for Self Assessment</span><span class="num">${money(ani.gross)}</span><span>Must land before</span><span class="num">5 April ${+ty.slice(0,4)+1}</span></div>${who.key==="hersh"?`<div class="actions-row"><button class="btn sm" id="meSetTopUp" data-cash="${ani.cash}">Set the March top-up to ${money(ani.cash)}</button></div>`:""}`
       :`<div class="gap ok"><span>Under £99,000, headroom</span><span class="num">${money(S.aniTarget-ani.proj)}</span></div>`}`:"";
     const status=!done?(payOcc?todo("To enter"):info("Not due")):ani.gross>0?todo("Over £99k"):ok("On target");
