@@ -310,13 +310,22 @@ function planDue(p,mk){
   if(p.freq==="oneoff")return mk===p.start;
   return(p.months||[]).includes(+mk.slice(5));
 }
-function occDate(p,mk){
+// England and Wales bank holidays to the end of the forecast
+const BANK_HOLIDAYS=new Set(["2026-01-01","2026-04-03","2026-04-06","2026-05-04","2026-05-25","2026-08-31","2026-12-25","2026-12-28",
+  "2027-01-01","2027-03-26","2027-03-29","2027-05-03","2027-05-31","2027-08-30","2027-12-27","2027-12-28",
+  "2028-01-03","2028-04-14","2028-04-17","2028-05-01","2028-05-29","2028-08-28","2028-12-25","2028-12-26",
+  "2029-01-01","2029-03-30","2029-04-02","2029-05-07","2029-05-28","2029-08-27","2029-12-25","2029-12-26",
+  "2030-01-01","2030-04-19","2030-04-22","2030-05-06","2030-05-27","2030-08-26","2030-12-25","2030-12-26"]);
+const isWorkingDay=iso=>{const[y,m,d]=iso.split("-").map(Number);return![0,6].includes(new Date(y,m-1,d).getDay())&&!BANK_HOLIDAYS.has(iso);};
+function occDate(p,mk){ // the day the bank actually moves the money
   const[y,m]=mk.split("-").map(Number), last=new Date(y,m,0).getDate();
-  if(p.day==="lwd"){let d=last;while([0,6].includes(new Date(y,m-1,d).getDay()))d--;return`${mk}-${pad(d)}`;}
-  return`${mk}-${pad(Math.min(Number(p.day)||15,last))}`;
+  if(p.day==="lwd"){let d=last;while(!isWorkingDay(`${mk}-${pad(d)}`))d--;return`${mk}-${pad(d)}`;} // pay: last working day
+  let iso=`${mk}-${pad(Math.min(Number(p.day)||15,last))}`;
+  while(!isWorkingDay(iso))iso=addDays(iso,1); // debits and standing orders due on a weekend or bank holiday go the next working day
+  return iso;
 }
 function occurrences(fromExcl,toIncl){
-  const out=[];let mk=mkOf(fromExcl);const end=mkOf(toIncl);
+  const out=[];let mk=addMonths(mkOf(fromExcl),-1);const end=mkOf(toIncl);
   while(mk<=end){PLAN.forEach(p=>{if(planDue(p,mk)){const d=occDate(p,mk);if(d>fromExcl&&d<=toIncl)out.push({p,mk,date:d,key:`${p.id}@${mk}`});}});mk=addMonths(mk,1);}
   return out.sort((a,b)=>a.date.localeCompare(b.date));
 }
@@ -488,11 +497,13 @@ function currentMEId(){ // the month being closed: the first month after the las
 }
 function float(bal){return["Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit"].reduce((s,a)=>s+(Number(bal[a])||0),0);}
 function computeME(mid){
-  const m=ME[mid]||{}, op=openingFor(mid), runDate=m.runDate||todayISO();
+  const m=ME[mid]||{}, op=openingFor(mid), runDate=m.runDate||(todayISO()>lastDay(mid)?lastDay(mid):todayISO());
   const occ=occurrences(op.date,runDate);
+  // payments marked "not gone yet" at the previous month-end are expected in this one
+  const prev=lastClose(mid);if(prev)Object.entries(prev.items||{}).forEach(([k,it])=>{if(it&&it.status==="notyet"&&!occ.some(o=>o.key===k)){const[id,omk]=k.split("@");const p=PLAN.find(x=>x.id===id);if(p)occ.push({p,mk:omk,date:prev.runDate,key:k,carried:true});}});
   const items=m.items||{};
-  const amtOf=o=>{const it=items[o.key];if(!it)return Number(o.p.amount);if(it.status==="missing")return 0;return it.amount!=null?Number(it.amount):Number(o.p.amount);};
-  const resolved=o=>{const it=items[o.key];if(!it)return false;if(o.p.basis==="estimate"&&it.status!=="missing")return it.amount!=null;return true;};
+  const amtOf=o=>{const it=items[o.key];if(!it)return Number(o.p.amount);if(it.status==="missing"||it.status==="notyet")return 0;return it.amount!=null?Number(it.amount):Number(o.p.amount);};
+  const resolved=o=>{const it=items[o.key];if(!it)return false;if(o.p.basis==="estimate"&&it.status!=="missing"&&it.status!=="notyet")return it.amount!=null;return true;};
   const txs=TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=runDate);
   const units=UNITS.map(u=>{
     const opening=u.accounts.reduce((s,a)=>s+(Number(op.balances[a])||0),0);
@@ -519,6 +530,7 @@ function computeME(mid){
   const fl=units.every(u=>u.actual!=null)?float(bal):null;
   if(fl!=null&&fl<S.floor)flags.push({t:`Float ${money0(fl)} is below the £10,000 floor.`});
   occ.filter(o=>o.p.basis==="estimate"&&items[o.key]?.amount!=null).forEach(o=>{const a=Number(items[o.key].amount),e=Number(o.p.amount);if(e>0&&Math.abs(a-e)/e>0.15)flags.push({t:`${o.p.name}: actual ${money(a)} vs estimate ${money(e)}.`});});
+  occ.filter(o=>items[o.key]?.status==="notyet").forEach(o=>flags.push({t:`${o.p.name} hasn't gone yet; it moves to next month's month-end.`}));
   occ.filter(o=>items[o.key]?.status==="override").forEach(o=>flags.push({t:`${o.p.name}: overridden to ${money(items[o.key].amount)}.`}));
   const rail=occ.find(o=>o.p.id.startsWith("p-h-rail")||o.p.name==="Rail");
   if(rail&&items[rail.key]?.amount>327)flags.push({t:`Rail ${money(items[rail.key].amount)} is above £327.`});
@@ -561,8 +573,8 @@ function renderHome(){
   $("v-home").innerHTML=`
   <div class="section"><div class="card">
     <div class="acc-h"><div class="eyebrow" style="margin:0;">Month-end · ${monthLabel(mid)}</div>${ME[mid]?.status==="open"?`<span class="chip warn">In progress</span>`:""}</div>
-    <div class="note">${setupPending()?(meDue?`Set your opening balances: read each one from your banking apps once. ${monthLabel(mid)} isn't reconciled; your first full month-end is ${monthLabel(addMonths(mid,1))}.`:`From 1 ${shortMonth(addMonths(mid,1))} you set your opening balances once, read from your banking apps. ${monthLabel(mid)} isn't reconciled. Keep logging until then.`):meDue?`${monthLabel(mid)} is ready to close once last month's pending transactions have cleared.`:`Opens on 1 ${shortMonth(addMonths(mid,1))}. Keep logging until then.`}</div>
-    <div class="actions-row"><button class="btn${meDue?" accent":" ghost"}" data-go="me">${setupPending()?"Set opening balances":ME[mid]?.status==="open"?"Continue month-end":"Start month-end"}</button></div>
+    <div class="note">${setupPending()?(`Set your opening balances once, read from your banking apps, any day once pending payments have cleared. Your first month-end then runs from that day to the start of next month.`):meDue?`${monthLabel(mid)} is ready to close once last month's pending transactions have cleared.`:`Opens on 1 ${shortMonth(addMonths(mid,1))}. Keep logging until then.`}</div>
+    <div class="actions-row"><button class="btn${meDue||setupPending()?" accent":" ghost"}" data-go="me">${setupPending()?"Set opening balances":ME[mid]?.status==="open"?"Continue month-end":"Start month-end"}</button></div>
   </div></div>
   <div class="section"><div class="grid-2">
     <div class="card"><div class="eyebrow">Float</div><div class="kpi num">${money0(fl)}</div><div class="small muted">Hersh and Sonali current accounts less cards, at ${dateShort(flDate)}. Floor £10,000.</div>${(()=>{if(!BASELINE||!BASELINE.rows)return"";const f=liveForecast(),e=f.rows[f.rows.length-1],b=BASELINE.rows[S.horizon];return b?`<div class="small" style="margin-top:8px;">July 2030 net worth ${money0(e.nw)} ${vsPlan(e.nw,b.nw).chip}</div>`:"";})()}</div>
@@ -877,6 +889,8 @@ function forecast(fromOpening){
   const dest=(to,v,from)=>{if(ISAS.includes(to))isas[to]+=v;else if(to==="Pension")pens["Hersh Vanguard personal"]+=v/0.8;else if(to==="Mortgage")mort-=v;else unitAdd(to,v);};
   const shares={};POTS.forEach(p=>shares[p.key]=p3mShare(p.key));
   const fySpent={};let prevEnd=st.date;
+  if(!fromOpening){const lc=lastClose();if(lc)Object.entries(lc.items||{}).forEach(([k,it])=>{if(!it||it.status!=="notyet")return;const p=PLAN.find(x=>x.id===k.split("@")[0]);if(!p)return;const v=Number(p.amount);
+    if(p.kind==="in")unitAdd(p.account,v);else{unitAdd(p.account,-v);if(p.kind==="transfer")dest(p.to,v,p.account);}if(p.role==="mortgage")mort-=v;});}
   for(let mk=mkOf(st.date);mk<=S.horizon;mk=addMonths(mk,1)){
     const end=lastDay(mk), first=mk===mkOf(st.date);
     // regular payments and income
@@ -1058,16 +1072,13 @@ function renderSetupME(mid){
   const ps=m.payslip||{},who=PEOPLE[0],ani=aniCalc(mid,ps,who);
   $("v-me").innerHTML=`
   <div class="card" style="margin-bottom:14px;"><div class="acc-h"><h2 style="font-size:24px;">Set opening balances</h2>${entered?`<span class="chip ok">Ready</span>`:`<span class="chip warn">To enter</span>`}</div>
-   <div class="note">A one-off start. Read each balance from your banking apps today and type it in. ${monthLabel(mid)} isn't reconciled; from here everything is either logged, in Plan, or asked for at month-end, so your first full month-end (${monthLabel(addMonths(mid,1))}) ties out to £0.00.</div>
+   <div class="note">A one-off start. Read each balance from your banking apps on the day and type it in. Nothing before that day is reconciled; from then on everything is logged, in Plan, or asked for at month-end, so your first month-end (${monthLabel(mkOf(runDate))}, from this date to the start of next month) ties out to £0.00.</div>
    <label class="f" style="margin-top:10px;max-width:220px;">Balances as at<input type="date" id="meRun" value="${runDate}"></label></div>
   ${fold(`me-${mid}-setup-cur`,"1. Current accounts and cards","As your banking apps show them now",entered?`<span class="chip ok">Done</span>`:`<span class="chip warn">To enter</span>`,!entered,
     `<div class="form-grid">${fields.map(([k,l])=>`<label class="f">${l}<input type="number" step="0.01" inputmode="decimal" data-mebal="${k}" value="${bal[k]!=null?(CARDS.includes(k)?-bal[k]:bal[k]):""}"></label>`).join("")}</div>
     ${fl!=null?`<div class="calc"><span>Float (Hersh and Sonali current accounts less cards)</span><span class="num tot">${money(fl)}</span></div>`:""}
-    <div class="note small" style="margin-top:8px;">Use the balance excluding anything still pending. List the pending items below, so they are counted when they clear.</div>`)}
-  ${fold(`me-${mid}-setup-pend`,"Pending on the day",`${Object.values(m.pending||{}).filter(Boolean).length} listed`,"",true,
-    `${Object.entries(m.pending||{}).filter(([,p])=>p).map(([k,p])=>`<div class="li"><div><div class="t">${esc(p.desc||"Pending")}</div><div class="d">${esc(p.account)}</div></div><div class="r"><div class="num" style="font-weight:600;">${p.dir==="in"?"+":"-"}${money(p.amount)}</div><button class="btn ghost sm" data-pdel="${k}" style="margin-top:4px;">Remove</button></div></div>`).join("")||`<div class="note">Nothing pending.</div>`}
-    <form id="pendForm" class="form-grid" style="margin-top:10px;"><label class="f full">What<input name="desc" required placeholder="e.g. Tesco, water bill"></label><label class="f">Account<select name="account">${opts(BANK)}</select></label><label class="f">Amount (£)<input type="number" step="0.01" min="0.01" name="amount" required></label><label class="f">Direction<select name="dir"><option value="out">Money out</option><option value="in">Money in</option></select></label><div class="actions-row full" style="margin-top:0;"><button class="btn ghost sm">Add pending item</button></div></form>
-    <div class="note small" style="margin-top:6px;">Don't also log these in Log; they are counted here. Card spends that are pending still go on the card's line.</div>`)}
+    <div class="note small" style="margin-top:8px;">Use the balance excluding anything still pending. If something is still pending, log it in Log dated the day after this date, so your first month-end counts it when it clears. Easiest of all: pick a day with nothing pending.</div>`)}
+
   ${fold(`me-${mid}-setup-inv`,"2. Mortgage, ISAs and pensions","Optional; leave a box empty to keep the figure from 17 October","",false,
     `<div class="li"><div style="flex:1;"><div class="t">Mortgage (Nationwide)</div><div class="d">17 Oct ${money((OPENING||SEED_OPENING).mortgage)}</div></div><div class="r"><input type="number" step="0.01" data-memort="close" value="${v(m.mortgage?.close)}" placeholder="Balance" style="width:130px;"></div></div>
     ${ISAS.map(k=>`<div class="li"><div style="flex:1;"><div class="t">${k}</div><div class="d">17 Oct ${money((OPENING||SEED_OPENING).isas?.[k]||0)}</div></div><div class="r"><input type="number" step="0.01" data-meisa="${k}" value="${v(m.isas?.[k])}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}
@@ -1079,8 +1090,7 @@ function renderSetupME(mid){
    <div class="actions-row"><button class="btn accent" id="meSetup" ${entered?"":"disabled"}>Set opening balances</button></div></div>`;
   const num=x=>x===""?null:parseFloat(x);
   $("meRun").onchange=e=>meSave(mid,{runDate:e.target.value});
-  $("pendForm").onsubmit=e=>{e.preventDefault();const d=Object.fromEntries(new FormData(e.target).entries());meSave(mid,{pending:{["p"+Date.now()]:{desc:d.desc.trim(),account:d.account,amount:parseFloat(d.amount)||0,dir:d.dir}}});};
-  $$("[data-pdel]").forEach(b=>b.onclick=()=>meSave(mid,{pending:{[b.dataset.pdel]:null}}));
+
   $$("[data-mebal]").forEach(i=>i.addEventListener("change",()=>{const a=i.dataset.mebal;let x=num(i.value);if(x!=null&&CARDS.includes(a))x=-Math.abs(x);meSave(mid,{runDate,balances:{[a]:x}});}));
   $$("[data-memort]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{mortgage:{close:num(i.value)}})));
   $$("[data-meisa]").forEach(i=>i.addEventListener("change",()=>meSave(mid,{isas:{[i.dataset.meisa]:num(i.value)}})));
@@ -1094,7 +1104,8 @@ function renderSetupME(mid){
     try{const b=writeBatch(db);
       const pending=Object.fromEntries(Object.entries(m.pending||{}).filter(([,p])=>p));
       b.set(doc(db,"v2meta","opening"),{pending,asAt:runDate,balances:{...bal},mortgage:mort,isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,setup:false,setBy:who,setAt:serverTimestamp(),note:"Opening balances set from the banking apps at the first month-end"});
-      b.set(doc(db,"month_ends",mid),{pending,status:"closed",setup:true,runDate,balances:{...bal},mortgage:{close:mort},isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,float:r2(float(bal)),closedBy:who,closedAt:serverTimestamp()},{merge:true});
+      const sid=addMonths(mkOf(runDate),-1);if(sid!==mid)b.delete(doc(db,"month_ends",mid));
+      b.set(doc(db,"month_ends",sid),{pending,status:"closed",setup:true,runDate,balances:{...bal},mortgage:{close:mort},isas,pensions:pens,pensionsAt:pensionsUpdated?runDate:o.pensionsAt,float:r2(float(bal)),closedBy:who,closedAt:serverTimestamp()},{merge:true});
       nextMoves(mid).forEach(x=>{if(!ACTIONS.some(a=>a.id===x.id))b.set(doc(db,"actions",x.id),{text:x.text,dueDate:x.dueDate,owner:"Hersh",amount:x.amount||null,reason:"Next month's moves",status:"todo",source:"next-month",createdAt:serverTimestamp()});});
       await b.commit();
       // the plan starts from the opening balances: re-save it once they are set
@@ -1111,9 +1122,9 @@ function renderME(){
   const ok=t=>`<span class="chip ok">${t||"Done"}</span>`, todo=t=>`<span class="chip warn">${t}</span>`, info=t=>`<span class="chip grey">${t}</span>`;
   // step 1: regular payments, folded per account
   const occRow=o=>{const it=c.items[o.key],est=o.p.basis==="estimate",st=it?.status,amtShown=it?.amount!=null?it.amount:o.p.amount;
-    const ctrl=est?`<div class="inline-in"><input type="number" step="0.01" inputmode="decimal" placeholder="Actual" data-meest="${o.key}" value="${it?.amount??""}"><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`
-      :`<div class="row-btns" style="margin-top:0;"><button class="btn sm${st==="ticked"?" on":""}" data-metick="${o.key}">${st==="ticked"?"Ticked":"Tick"}</button><button class="btn ghost sm${st==="override"?" on":""}" data-meovr="${o.key}">Override</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`;
-    return`<div class="li" style="display:block;"><div style="display:flex;justify-content:space-between;gap:10px;"><div style="min-width:0;"><div class="t">${esc(o.p.name)}</div><div class="d">${dateShort(o.date)}${o.p.kind==="transfer"?" · to "+esc(accLabel(o.p.to)):""}${est?` · estimate ${money(o.p.amount)}`:""}</div></div><div class="r num" style="font-weight:600;${o.p.kind==="in"?"color:var(--teal-dark)":""}">${st==="missing"?"£0.00":(o.p.kind==="in"?"+":"")+money(amtShown)}</div></div>
+    const ctrl=est?`<div class="inline-in"><input type="number" step="0.01" inputmode="decimal" placeholder="Actual" data-meest="${o.key}" value="${it?.amount??""}"><button class="btn ghost sm${st==="notyet"?" on":""}" data-menotyet="${o.key}">Not gone yet</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`
+      :`<div class="row-btns" style="margin-top:0;"><button class="btn sm${st==="ticked"?" on":""}" data-metick="${o.key}">${st==="ticked"?"Ticked":"Tick"}</button><button class="btn ghost sm${st==="override"?" on":""}" data-meovr="${o.key}">Override</button><button class="btn ghost sm${st==="notyet"?" on":""}" data-menotyet="${o.key}">Not gone yet</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`;
+    return`<div class="li" style="display:block;"><div style="display:flex;justify-content:space-between;gap:10px;"><div style="min-width:0;"><div class="t">${esc(o.p.name)}</div><div class="d">${dateShort(o.date)}${o.p.kind==="transfer"?" · to "+esc(accLabel(o.p.to)):""}${est?` · estimate ${money(o.p.amount)}`:""}</div></div><div class="r num" style="font-weight:600;${o.p.kind==="in"?"color:var(--teal-dark)":""}">${st==="missing"||st==="notyet"?"£0.00":(o.p.kind==="in"?"+":"")+money(amtShown)}</div></div>${o.carried?`<div class="d"><span class="chip warn">Carried from last month</span></div>`:st==="notyet"?`<div class="d">Moves to next month's month-end</div>`:""}
       <div style="margin-top:8px;">${ctrl}</div>
       ${meOverride===o.key?`<form class="sheet form-grid" data-meovrform="${o.key}"><label class="f">Actual amount (£)<input type="number" step="0.01" name="amt" value="${it?.amount??o.p.amount}" required></label><label class="f">Applies to<select name="scope"><option value="month">Just this month</option><option value="forward">This month and going forward</option></select></label><div class="full actions-row" style="margin-top:0;"><button type="button" class="btn ghost sm" data-meovrcancel>Cancel</button><button class="btn sm">Save</button></div></form>`:""}</div>`;};
   let firstAcc=null;const accFolds=ACCOUNTS.map(a=>{const l=c.occ.filter(o=>o.p.account===a);if(!l.length)return"";const left=l.filter(o=>!c.resolved(o)).length;
@@ -1139,6 +1150,7 @@ function renderME(){
   const unit=u=>{const st=u.gap==null?todo("Enter balance"):u.gap===0?ok("£0.00"):todo(money(u.gap,true));
     return fold(`me-${mid}-u-${u.key}`,u.label,`Expected ${money(u.expected)}`,st,u===c.units.find(x=>x.gap!==0),
     `<div class="form-grid">${u.accounts.map(a=>`<label class="f">${esc(a)}${CARDS.includes(a)?" (owed)":""}<input type="number" step="0.01" inputmode="decimal" data-mebal="${a}" value="${m.balances&&m.balances[a]!=null?(CARDS.includes(a)?-m.balances[a]:m.balances[a]):""}"></label>`).join("")}</div>
+    ${c.runDate<todayISO()?`<div class="note small" style="margin-top:6px;">Only have today's balance? Enter it in the box for today and the app works back to ${dateShort(c.runDate)} using what's logged since.</div><div class="form-grid" style="margin-top:6px;">${u.accounts.map(a=>`<label class="f">${esc(a)} today${CARDS.includes(a)?" (owed)":""}<input type="number" step="0.01" inputmode="decimal" data-metoday="${a}" placeholder="Today"></label>`).join("")}</div>`:""}
     <div class="calc"><span>Opening (${dateShort(c.op.date)})</span><span class="num">${money(u.opening)}</span><span>Regular payments and income</span><span class="num">${money(u.plan,true)}</span>${u.pend?`<span>Pending at the start, now cleared</span><span class="num">${money(u.pend,true)}</span>`:""}<span>Logged transactions (${u.txCount})</span><span class="num">${money(u.tx,true)}</span><span class="tot">Expected</span><span class="num tot">${money(u.expected)}</span>${u.actual!=null?`<span>Actual</span><span class="num">${money(u.actual)}</span>`:""}</div>
     ${u.gap==null?"":u.gap===0?`<div class="gap ok"><span>Ties out</span><span class="num">£0.00</span></div>`:`<div class="gap bad"><span>Gap: log what's missing</span><span class="num">${money(u.gap,true)}</span></div>`}
     <div class="actions-row"><button class="btn ghost sm" data-feedunit="${u.key}">See logged transactions</button></div>`,true);};
@@ -1165,7 +1177,7 @@ function renderME(){
   const notes=c.flags.filter(f=>!f.bad);
   $("v-me").innerHTML=`
   <div class="card" style="margin-bottom:14px;"><div class="acc-h"><h2 style="font-size:24px;">${monthLabel(mid)}</h2>${c.blockers?todo(c.blockers+" to fix"):ok("Ready to close")}</div>
-   <div class="note">From ${dateLong(c.op.date)} to the day you run it, once last month's pending transactions have cleared.</div>
+   <div class="note">From ${dateLong(c.op.date)} to the "balances as at" date below: the last day of the month unless you change it. Enter each balance as it stood at the end of that day; anything dated after it belongs to next month.</div>
    <label class="f" style="margin-top:10px;max-width:220px;">Balances as at<input type="date" id="meRun" value="${c.runDate}"></label>
    <div class="progress">${[s1Left===0,psDone,uLeft===0].map(x=>`<span class="${x?"done":"bad"}"></span>`).join("")}</div></div>
   ${step1}${step2}${step3}${step4}${step5}${step6}
@@ -1181,6 +1193,10 @@ function wireME(mid,c){
   const m=c.m;
   const num=v=>v===""?null:parseFloat(v);
   $("meRun")?.addEventListener("change",e=>meSave(mid,{runDate:e.target.value}));
+  // today's balance less movements logged or planned after the as-at date gives the as-at balance
+  $$("[data-metoday]").forEach(i=>i.addEventListener("change",()=>{const a=i.dataset.metoday;let x=i.value===""?null:parseFloat(i.value);if(x==null)return;if(CARDS.includes(a))x=-Math.abs(x);
+    const after=TX.filter(t=>t.date>c.runDate&&t.date<=todayISO()).reduce((s,t)=>s+txEffect(t,a),0)+occurrences(c.runDate,todayISO()).reduce((s,o)=>s+occEffect(o,Number(o.p.amount),a),0);
+    meSave(mid,{runDate:c.runDate,balances:{[a]:r2(x-after)}});setStatus(`${a}: ${money(Math.abs(r2(x-after)))} at ${dateShort(c.runDate)}, worked back from today`);}));
   $$("[data-mebal]").forEach(i=>i.addEventListener("change",()=>{const a=i.dataset.mebal;let v=num(i.value);if(v!=null&&CARDS.includes(a))v=-Math.abs(v);meSave(mid,{runDate:c.runDate,balances:{[a]:v}});}));
   $$("[data-meps]").forEach(i=>i.addEventListener("change",()=>{const k=i.dataset.meps,who=PEOPLE.find(w=>w.key===i.dataset.who);const patch={runDate:c.runDate,[who.field]:{[k]:num(i.value)}};
     if(k==="net"){const o=c.occ.find(x=>x.p.role===who.role);if(o)patch.items={[o.key]:{status:"actual",amount:num(i.value)}};}
@@ -1196,6 +1212,7 @@ function wireME(mid,c){
     await meItem(mid,key,{status:"override",amount:amt});
     if(d.scope==="forward"&&o)try{await changePlan(o.p,addMonths(o.mk,1),{amount:amt});}catch(err){fail(err);}
     meOverride=null;renderME();});
+  $$("[data-menotyet]").forEach(b=>b.onclick=()=>meItem(mid,b.dataset.menotyet,{status:"notyet",amount:null}));
   $$("[data-memiss]").forEach(b=>b.onclick=async()=>{const key=b.dataset.memiss,o=c.occ.find(x=>x.key===key);await meItem(mid,key,{status:"missing",amount:0});
     if(o&&o.p.freq!=="oneoff"&&confirm(`${o.p.name} didn't arrive. Has it ended? OK ends it from ${shortMonth(o.mk)}; Cancel keeps it as a one-month miss.`)){try{await updateDoc(doc(db,"plan_items",o.p.id),{end:addMonths(o.mk,-1),updatedAt:serverTimestamp()});}catch(err){fail(err);}}});
   $("meTickAll")?.addEventListener("click",()=>{const items={};c.occ.forEach(o=>{if(!(m.items||{})[o.key]&&o.p.basis!=="estimate")items[o.key]={status:"ticked",amount:null};});meSave(mid,{runDate:c.runDate,items});});
