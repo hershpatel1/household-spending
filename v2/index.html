@@ -32,6 +32,10 @@ main{padding-top:16px;}
 .section{margin-bottom:22px;}
 .card{background:var(--card);border-radius:16px;box-shadow:var(--shadow);border:1px solid var(--border);padding:16px;min-width:0;overflow:hidden;}
 .card+.card{margin-top:12px;}
+.grid-2>.card+.card{margin-top:0;}
+.pill{display:inline-flex;background:var(--bg-2);border-radius:20px;padding:3px;gap:2px;}
+.pill button{border:0;background:none;font-family:inherit;font-size:12px;font-weight:600;color:var(--muted);padding:6px 12px;border-radius:16px;cursor:pointer;min-height:32px;}
+.pill button.on{background:var(--teal-deep);color:#fff;}
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
 @media(max-width:620px){.grid-2{grid-template-columns:1fr;}}
 .muted{color:var(--muted);} .small{font-size:12px;}
@@ -187,7 +191,7 @@ details.fold.inner>.fb{padding:0 12px 10px;}
   </section>
   <section id="v-plan" class="hidden">
     <div class="seg" id="planSeg" style="margin-bottom:16px;">
-      <button data-ps="pay" class="on">Regular</button><button data-ps="budgets">Budgets</button><button data-ps="oneoff">One-offs</button>
+      <button data-ps="pay" class="on">Regular</button><button data-ps="budgets">Budgets</button><button data-ps="oneoff">One-offs</button><button data-ps="forecast">Forecast</button>
     </div>
     <div id="planBody"></div>
   </section>
@@ -223,9 +227,14 @@ const POTS=[{key:"dayToDay",label:"Day-to-day",cycle:"monthly"},{key:"riyaan",la
 const UNITS=[{key:"joint",label:"Joint",accounts:["Joint"]},{key:"hersh",label:"Hersh",accounts:["Hersh Debit","Hersh Credit"]},{key:"sonali",label:"Sonali",accounts:["Sonali Debit","Sonali Credit"]}];
 const DESTS=["Mortgage","Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA","Pension"];
 const ISAS=["Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA"];
-const PENSIONS=["Hersh Scottish Widows","Hersh LifeSight","Hersh Vanguard personal","Hersh CIP workplace","Sonali Scottish Widows"];
-const S={floor:10000,aniTarget:99000,mortgageRate:0.0384,sacStart:"2026-12",sacPct:0.03};
-const SEED_VERSION=2;
+const PENSIONS=["Hersh Scottish Widows","Hersh LifeSight","Hersh Vanguard personal","Hersh CIP workplace","Sonali Scottish Widows","Sonali Imagination workplace"];
+const S={floor:10000,personTarget:5000,aniTarget:99000,mortgageRate:0.0384,sacStart:"2026-12",sacPct:0.03,horizon:"2030-07",
+  // growth assumptions (planning assumptions, editable here)
+  rates:{ss:0.05,pension:0.05,cashAfter:0.035,cash:{"Hersh Cash ISA":[0.0455,"2027-06"],"Sonali Cash ISA":[0.0442,"2027-07"]}},
+  // workplace pensions: gross monthly = salary/12 x (employer + employee sacrifice)
+  workplace:[{pot:"Hersh CIP workplace",salary:115000,er:0.06,ee:0.03,eeFrom:"2026-12",from:"2026-10"},{pot:"Sonali Imagination workplace",salary:86000,er:0.05,ee:0.05,eeFrom:"2027-01",from:"2027-01",note:"Employer share assumed 5% until the offer letter"}],
+  rebalanceMonths:[1,4,7,10]};
+const SEED_VERSION=3;
 
 /* ================= helpers ================= */
 const $=id=>document.getElementById(id), $$=s=>document.querySelectorAll(s);
@@ -258,7 +267,7 @@ const fail=e=>setStatus("Save failed: "+e.message,true);
 const ordinal=d=>d+([1,21,31].includes(d)?"st":[2,22].includes(d)?"nd":[3,23].includes(d)?"rd":"th");
 
 /* ================= state ================= */
-let TX=[],BUDGETS={},ANNUAL={},PLAN=[],ACTIONS=[],PLANNED=[],RULES=[],ME={},OPENING=null;
+let TX=[],BUDGETS={},ANNUAL={},PLAN=[],ACTIONS=[],PLANNED=[],RULES=[],ME={},OPENING=null,BASELINE=null;
 let view="home";
 const FOLD=store.get("v2.fold",{});
 function fold(key,title,sub,status,defOpen,body,inner){const open=FOLD[key]??defOpen;return`<details class="fold${inner?" inner":""}" data-fold="${key}"${open?" open":""}><summary><div class="ttl">${title}${sub?`<small>${sub}</small>`:""}</div><div class="st">${status||""}</div></summary><div class="fb">${body}</div></details>`;}
@@ -338,7 +347,7 @@ function seedPlan(){
     // Hersh
     P("p-h-pay",{name:"Hersh net pay (CPI)",account:"Hersh Debit",kind:"in",amount:6440,day:"lwd",basis:"estimate",role:"hershPay",note:"Actual taken from the payslip step"}),
     P("p-h-joint",{name:"Standing order to Joint",account:"Hersh Debit",kind:"transfer",to:"Joint",amount:1880,day:30}),
-    P("p-h-sonali",{name:"Standing order to Sonali",account:"Hersh Debit",kind:"transfer",to:"Sonali Debit",amount:1880,day:28,end:"2027-01",note:"4 payments; stops after 28 Jan"}),
+    P("p-h-sonali",{name:"Standing order to Sonali",account:"Hersh Debit",kind:"transfer",to:"Sonali Debit",amount:1880,day:28,end:"2027-01",endAction:true,note:"4 payments; cancel in February"}),
     P("p-h-netflix",{name:"Netflix",account:"Hersh Debit",amount:20.99,day:5}),
     P("p-h-spotify",{name:"Spotify",account:"Hersh Debit",amount:12.99,day:28}),
     P("p-h-mobile",{name:"Hersh mobile",account:"Hersh Debit",amount:10.50,day:21}),
@@ -362,9 +371,10 @@ function seedPlan(){
 function seedActions(){
   const A=(id,o)=>({id,owner:"Hersh",status:"todo",source:"scheduled",amount:null,reason:"",...o});
   return[
-    A("a-so-hs",{dueDate:"2026-10-27",text:"Set up standing order Hersh to Sonali: £1,880 on the 28th, last payment 28 Jan",amount:1880,reason:"Keeps Sonali's joint standing order going until she is paid"}),
-    A("a-so-hj",{dueDate:"2026-10-29",text:"Set up standing order Hersh to Joint: £1,880 on the 30th",amount:1880}),
-    A("a-so-sj",{dueDate:"2026-10-29",owner:"Sonali",text:"Set up standing order Sonali to Joint: £1,880 on the 30th",amount:1880}),
+    A("a-so-hs",{status:"done",doneOn:"2026-10-17",dueDate:"2026-10-27",text:"Set up standing order Hersh to Sonali: £1,880 on the 28th, last payment 28 Jan",amount:1880,reason:"Keeps Sonali's joint standing order going until she is paid"}),
+    A("a-so-hj",{status:"done",doneOn:"2026-10-17",dueDate:"2026-10-29",text:"Set up standing order Hersh to Joint: £1,880 on the 30th",amount:1880}),
+    A("a-so-hs-cancel",{dueDate:"2027-02-01",text:"Cancel the Hersh to Sonali standing order (last payment was 28 Jan)",amount:1880,reason:"Sonali is paid from January"}),
+    A("a-so-sj",{status:"done",doneOn:"2026-10-17",dueDate:"2026-10-29",owner:"Sonali",text:"Set up standing order Sonali to Joint: £1,880 on the 30th",amount:1880}),
     A("a-cip",{dueDate:"2026-11-30",text:"Ask CIP whether salary sacrifice can be raised mid-year",reason:"Alternative to the March pension top-up"}),
     A("a-tfc",{dueDate:"2026-12-01",text:"Apply for Tax-Free Childcare",reason:"£155.38 a month off nursery from January"}),
     A("a-budgets27",{dueDate:"2027-04-01",owner:"Either",text:"April review: confirm 2027/28 budgets and goals",reason:"Holidays £5,000, Exceptionals £1,000 pre-set"}),
@@ -390,6 +400,12 @@ async function ensureSeed(){
   const ref=doc(db,"v2meta","seed"), snap=await getDoc(ref);
   if(snap.exists()&&(snap.data().version||0)>=SEED_VERSION)return;
   const b=writeBatch(db), ts=serverTimestamp();
+  if(snap.exists()&&(snap.data().version||0)===2){ // upgrade only what changed, keep everything else as the users left it
+    ["a-so-hs","a-so-hj","a-so-sj"].forEach(id=>b.set(doc(db,"actions",id),{status:"done",doneOn:"2026-10-17"},{merge:true}));
+    const c=seedActions().find(a=>a.id==="a-so-hs-cancel");const{id,...r}=c;b.set(doc(db,"actions",id),{...r,createdAt:ts},{merge:true});
+    b.set(doc(db,"plan_items","p-h-sonali"),{endAction:true,note:"4 payments; cancel in February"},{merge:true});
+    b.set(ref,{version:SEED_VERSION,at:ts});await b.commit();return;
+  }
   seedPlan().forEach(({id,...r})=>b.set(doc(db,"plan_items",id),{...r,createdAt:ts},{merge:true}));
   seedActions().forEach(({id,...r})=>b.set(doc(db,"actions",id),{...r,createdAt:ts},{merge:true}));
   SEED_RULES.forEach(({id,...r})=>b.set(doc(db,"budget_rules",id),r,{merge:true}));
@@ -415,6 +431,7 @@ function listen(){
   col("budget_rules",l=>{RULES=l;syncClassicBudget();});
   col("month_ends",l=>{ME={};l.forEach(d=>ME[d.id]=d);});
   onSnapshot(doc(db,"v2meta","opening"),s=>{OPENING=s.exists()?s.data():null;render();},err);
+  onSnapshot(doc(db,"v2meta","baseline"),s=>{BASELINE=s.exists()?s.data():false;ensureBaseline();render();},err);
 }
 
 /* ================= navigation ================= */
@@ -468,7 +485,7 @@ function computeME(mid){
   const mOpen=Number(op.mortgage)||0;
   const mClose=m.mortgage?.close!=null&&m.mortgage.close!==""?Number(m.mortgage.close):null;
   const mortgage={open:mOpen,pay:r2(mPay),over:r2(mOver),close:mClose,change:mClose!=null?r2(mClose-mOpen):null,interest:mClose!=null?r2(mClose-mOpen+mPay+mOver):null};
-  const isas=ISAS.map(k=>{const contrib=occ.filter(o=>o.p.to===k).reduce((s,o)=>s+amtOf(o),0)+txs.filter(t=>t.toAccount===k).reduce((s,t)=>s+t.value,0);const open=Number(op.isas?.[k])||0;const close=m.isas&&m.isas[k]!=null&&m.isas[k]!==""?Number(m.isas[k]):null;return{k,open,contrib:r2(contrib),close,growth:close!=null?r2(close-open-contrib):null};});
+  const isas=ISAS.map(k=>{const contrib=occ.filter(o=>o.p.to===k).reduce((s,o)=>s+amtOf(o),0)+txs.filter(t=>t.toAccount===k).reduce((s,t)=>s+t.value,0)-txs.filter(t=>t.account===k).reduce((s,t)=>s+t.value,0);const open=Number(op.isas?.[k])||0;const close=m.isas&&m.isas[k]!=null&&m.isas[k]!==""?Number(m.isas[k]):null;return{k,open,contrib:r2(contrib),close,growth:close!=null?r2(close-open-contrib):null};});
   const pensionDue=!op.pensionsAt||daysBetween(op.pensionsAt,runDate)>=182;
   const unresolved=occ.filter(o=>!resolved(o));
   const bal=m.balances||{};
@@ -501,7 +518,8 @@ function actionRow(a){
   const chip=a.status==="done"?`<span class="chip ok">Done</span>`:a.status==="skipped"?`<span class="chip grey">Skipped</span>`:overdue?`<span class="chip warn">Overdue</span>`:`<span class="chip">${dateShort(a.dueDate)}</span>`;
   return`<div class="li"><div style="min-width:0;"><div class="t">${esc(a.text)}</div><div class="d">${esc(a.owner)}${a.reason?" · "+esc(a.reason):""}</div>${a.status==="todo"?`<div class="row-btns"><button class="btn sm" data-act="done" data-id="${a.id}">Done</button><button class="btn ghost sm" data-act="skip" data-id="${a.id}">Skip</button></div>`:a.note?`<div class="d">${esc(a.note)}</div>`:""}</div><div class="r">${chip}${a.amount?`<div class="num small" style="margin-top:4px;">${money(a.amount)}</div>`:""}</div></div>`;
 }
-let showAllActions=false;
+let showAllActions=false,potScope=store.get("v2.potScope","month");
+function ytdPot(k,mk){const fy=fyStart(mk);let b=0,sp=0;for(let m=fy;m<=mk;m=addMonths(m,1)){b+=monthBudget(k,m);sp+=potSpend(TX.filter(t=>t.monthKey===m),k);}return{b,sp};}
 function renderHome(){
   const mk=curMK(), t=todayISO();
   const mid=currentMEId(), c=computeME(mid), lc=lastClose();
@@ -519,17 +537,19 @@ function renderHome(){
     <div class="actions-row"><button class="btn${meDue?" accent":" ghost"}" data-go="me">${ME[mid]?.status==="open"?"Continue month-end":"Start month-end"}</button></div>
   </div></div>
   <div class="section"><div class="grid-2">
-    <div class="card"><div class="eyebrow">Float</div><div class="kpi num">${money0(fl)}</div><div class="small muted">Hersh and Sonali current accounts less cards, at ${dateShort(flDate)}. Floor £10,000.</div></div>
+    <div class="card"><div class="eyebrow">Float</div><div class="kpi num">${money0(fl)}</div><div class="small muted">Hersh and Sonali current accounts less cards, at ${dateShort(flDate)}. Floor £10,000.</div>${(()=>{if(!BASELINE||!BASELINE.rows)return"";const f=liveForecast(),e=f.rows[f.rows.length-1],b=BASELINE.rows[S.horizon];return b?`<div class="small" style="margin-top:8px;">July 2030 net worth ${money0(e.nw)} ${vsPlan(e.nw,b.nw).chip}</div>`:"";})()}</div>
     <div class="card"><div class="eyebrow">Next 14 days</div>${upcoming.length?upcoming.slice(0,5).map(o=>`<div class="li" style="padding:6px 0;"><div class="small"><b>${esc(o.p.name)}</b><div class="muted">${dateShort(o.date)} · ${esc(o.p.account)}</div></div><div class="r num small" style="${o.p.kind==="in"?"color:var(--teal-dark)":""}">${o.p.kind==="in"?"+":"-"}${money(o.p.amount)}</div></div>`).join("")+(upcoming.length>5?`<div class="small muted">and ${upcoming.length-5} more</div>`:""):`<div class="note">Nothing due.</div>`}</div>
   </div></div>
   <div class="section">${fold("home-actions","Actions",`${todo.length} open`,todo.some(a=>a.dueDate<t)?`<span class="chip warn">Overdue</span>`:todo.some(a=>a.dueDate<=addDays(t,7))?`<span class="chip warn">Due soon</span>`:"",true,`<div>${shown.length?shown.map(actionRow).join(""):`<div class="empty">Nothing due in the next month.</div>`}
     <div class="actions-row" style="justify-content:space-between;"><button class="btn ghost sm" id="toggleActions">${showAllActions?"Next month only":`Show all (${todo.length})`}</button><button class="btn ghost sm" id="addActionBtn">Add action</button></div>
     <form id="actionForm" class="form-grid hidden" style="margin-top:12px;"><label class="f full">What<input id="aText" required></label><label class="f">Due<input type="date" id="aDue" value="${t}" required></label><label class="f">Owner<select id="aOwner"><option>Hersh</option><option>Sonali</option><option>Either</option></select></label><label class="f">Amount (£)<input type="number" step="0.01" id="aAmount"></label><label class="f">Why<input id="aReason"></label><div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
   </div>`)}</div>
-  <div class="section"><div class="eyebrow">Budgets · ${monthLabel(mk)}</div><div class="grid-2">${potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk))}${potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk))}</div></div>
+  <div class="section"><div class="acc-h"><div class="eyebrow" style="margin:0;">Budgets · ${potScope==="ytd"?fyLabel(fy)+" to date":monthLabel(mk)}</div><div class="pill" id="potPill"><button data-scope="month" class="${potScope==="month"?"on":""}">Month</button><button data-scope="ytd" class="${potScope==="ytd"?"on":""}">Year to date</button></div></div>
+   <div class="grid-2">${potScope==="ytd"?["dayToDay","riyaan"].map(k=>{const y=ytdPot(k,mk);return potCard(potLabel(k),y.sp,y.b,`${shortMonth(fy)} to ${shortMonth(mk)}`);}).join(""):potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk))+potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk))}</div></div>
   <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")+annualBudget("holidays",fy)-potSpend(fyTx,"holidays"))} left across both`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy))}</div>`)}</div>
   <div class="section">${openPotCard(fy)}</div>
   <div class="small muted" style="text-align:center;margin-bottom:12px;"><a href="../" style="color:var(--teal-dark);">Classic analytics</a></div>`;
+  $$("#potPill button").forEach(b=>b.onclick=()=>{potScope=b.dataset.scope;store.set("v2.potScope",potScope);renderHome();});
   $("toggleActions").onclick=()=>{showAllActions=!showAllActions;renderHome();};
   $("addActionBtn").onclick=()=>$("actionForm").classList.toggle("hidden");
   $("actionForm").onsubmit=async e=>{e.preventDefault();try{await addDoc(collection(db,"actions"),{text:$("aText").value.trim(),dueDate:$("aDue").value,owner:$("aOwner").value,amount:parseFloat($("aAmount").value)||null,reason:$("aReason").value.trim(),status:"todo",source:"manual",createdAt:serverTimestamp()});setStatus("Action added");}catch(err){fail(err);}};
@@ -545,11 +565,12 @@ document.addEventListener("click",async e=>{
 /* ================= LOG ================= */
 let logType="spend",editingId=null;
 $("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS));
-function syncTo(){const u=unitOf($("fAccount").value);[...$("fTo").options].forEach(o=>o.hidden=!!u&&unitOf(o.value)===u);if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
+function syncTo(){const f=$("fAccount").value,u=unitOf(f),isa=ISAS.includes(f);[...$("fTo").options].forEach(o=>o.hidden=isa?(!ISAS.includes(o.value)||o.value===f):(!!u&&unitOf(o.value)===u));if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
 $("fAccount").addEventListener("change",syncTo);
 $("fPot").addEventListener("change",()=>{if($("fPot").value==="householdInvestment"){$("fAccount").value="Joint";syncTo();}});$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
-const HELP={spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"Only for one-off moves that aren't in Plan: between Hersh, Sonali and Joint, or an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test). Don't log credit card repayments: each person's card and current account are checked together at month-end, so repayments cancel out."};
+const HELP={spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"Only for one-off moves that aren't in Plan: between Hersh, Sonali and Joint, an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test), or an ISA transfer such as fixed cash to S&S (from one ISA to another, so growth isn't miscounted). Don't log credit card repayments: each person's card and current account are checked together at month-end, so repayments cancel out."};
 function setType(t){
+  const cur=$("fAccount").value;$("fAccount").innerHTML=opts(t==="transfer"?BANK.concat(ISAS):ACCOUNTS);$("fAccount").value=[...$("fAccount").options].some(o=>o.value===cur)?cur:"Hersh Debit";
   logType=t;$$("#typeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   const sp=t==="spend"||t==="refund";
   $$(".g-spend").forEach(el=>el.classList.toggle("hidden",!sp));$$(".g-transfer").forEach(el=>el.classList.toggle("hidden",t!=="transfer"));$$(".g-income").forEach(el=>el.classList.toggle("hidden",t!=="income"));
@@ -640,7 +661,7 @@ function renderFeed(){
 /* ================= PLAN ================= */
 let planSeg="pay",planOpen=null,planMode=null,adding=false;
 $$("#planSeg button").forEach(b=>b.addEventListener("click",()=>{planSeg=b.dataset.ps;$$("#planSeg button").forEach(x=>x.classList.toggle("on",x===b));planOpen=null;adding=false;renderPlan();}));
-function renderPlan(){({pay:renderPlanPay,budgets:renderPlanBudgets,oneoff:renderPlanOneoff})[planSeg]();}
+function renderPlan(){({pay:renderPlanPay,budgets:renderPlanBudgets,oneoff:renderPlanOneoff,forecast:renderPlanForecast})[planSeg]();}
 function itemForm(p,mode){
   const v=k=>esc(p?.[k]??"");const mkDef=mode==="add"?curMK():addMonths(curMK(),1);
   const showWhen=mode!=="add";
@@ -743,6 +764,140 @@ function renderPlanOneoff(){
 }
 document.addEventListener("click",async e=>{const b=e.target.closest("[data-pp]");if(!b)return;try{await updateDoc(doc(db,"planned_payments",b.dataset.id),{status:b.dataset.pp});}catch(err){fail(err);}});
 
+
+/* ================= FORECAST to July 2030 ================= */
+const monthlyRate=r=>Math.pow(1+r,1/12)-1;
+const lastDay=mk=>{const[y,m]=mk.split("-").map(Number);return`${mk}-${pad(new Date(y,m,0).getDate())}`;};
+function startState(fromOpening){
+  const o=OPENING||SEED_OPENING, lc=fromOpening?null:lastClose();
+  const bal=lc?lc.balances:o.balances, unit=k=>UNITS.find(u=>u.key===k).accounts.reduce((s,a)=>s+(Number(bal[a])||0),0);
+  const pens={};PENSIONS.forEach(k=>pens[k]=Number((lc?lc.pensions:o.pensions)?.[k])||0);
+  const isas={};ISAS.forEach(k=>isas[k]=Number((lc?lc.isas:o.isas)?.[k])||0);
+  return{date:lc?lc.runDate:o.asAt,joint:unit("joint"),hersh:unit("hersh"),sonali:unit("sonali"),isas,pens,mort:Number(lc?lc.mortgage?.close??o.mortgage:o.mortgage)||0};
+}
+function p3mShare(pot){ // previous three complete months: share of the budget's spending by person (own accounts only)
+  const a=addMonths(curMK(),-3),b=addMonths(curMK(),-1);let h=0,s=0;
+  TX.filter(t=>t.type==="spend"&&t.pot===pot&&t.monthKey>=a&&t.monthKey<=b&&t.direction==="out").forEach(t=>{const u=unitOf(t.account);if(u==="hersh")h+=t.value;else if(u==="sonali")s+=t.value;});
+  return h+s>0?{hersh:h/(h+s),sonali:s/(h+s),basis:"previous 3 months"}:{hersh:.5,sonali:.5,basis:"50/50 until there is history"};
+}
+function forecast(fromOpening){
+  const st=startState(fromOpening), today=todayISO(), rows=[];
+  let{joint,hersh,sonali,mort}=st;const isas={...st.isas},pens={...st.pens};
+  const unitAdd=(acc,v)=>{const u=unitOf(acc);if(u==="joint")joint+=v;else if(u==="hersh")hersh+=v;else if(u==="sonali")sonali+=v;};
+  const dest=(to,v,from)=>{if(ISAS.includes(to))isas[to]+=v;else if(to==="Pension")pens[ownerOf(from)==="Sonali"?"Sonali Imagination workplace":"Hersh Vanguard personal"]+=v/0.8;else if(to==="Mortgage")mort-=v;else unitAdd(to,v);};
+  const shares={};POTS.forEach(p=>shares[p.key]=p3mShare(p.key));
+  const fySpent={};let prevEnd=st.date;
+  for(let mk=mkOf(st.date);mk<=S.horizon;mk=addMonths(mk,1)){
+    const end=lastDay(mk), first=mk===mkOf(st.date);
+    // regular payments and income
+    occurrences(prevEnd,end).forEach(o=>{const p=o.p,v=Number(p.amount);
+      if(p.kind==="in")unitAdd(p.account,v);else{unitAdd(p.account,-v);if(p.kind==="transfer")dest(p.to,v,p.account);}
+      if(p.role==="mortgage")mort-=v;});
+    // what has actually happened since the start point (live forecast only)
+    if(!fromOpening)TX.filter(t=>!t.preOpening&&t.date>prevEnd&&t.date<=end&&t.date<=today).forEach(t=>{
+      if(t.type==="transfer"){if(ISAS.includes(t.account))isas[t.account]-=t.value;else unitAdd(t.account,-t.value);dest(t.toAccount,t.value,t.account);}
+      else unitAdd(t.account,t.direction==="in"?t.value:-t.value);});
+    // planned one-offs
+    PLANNED.filter(x=>x.status==="planned"&&x.date>prevEnd&&x.date<=end).forEach(x=>unitAdd(x.account,x.direction==="in"?x.amount:-x.amount));
+    // budgets still to be spent (monthly pots: what's left this month; annual pots: what's left in the year, spread evenly)
+    const fy=fyStart(mk), spentTo=fromOpening?st.date:today;
+    ["dayToDay","riyaan"].forEach(k=>{const spent=TX.filter(t=>t.monthKey===mk&&t.date<=spentTo).reduce((s,t)=>s+(t.type==="spend"&&t.pot===k?(t.direction==="out"?t.value:-t.value):0),0);
+      const left=Math.max(0,monthBudget(k,mk)-(mk<=mkOf(spentTo)?spent:0));hersh-=left*shares[k].hersh;sonali-=left*shares[k].sonali;});
+    ["exceptionals","holidays"].forEach(k=>{const key=k+fy;if(fySpent[key]==null)fySpent[key]=TX.filter(t=>fyStart(t.monthKey)===fy&&t.date<=spentTo).reduce((s,t)=>s+(t.type==="spend"&&t.pot===k?(t.direction==="out"?t.value:-t.value):0),0);
+      const monthsLeft=(+fy.slice(0,4)+1)*12+3-(+mk.slice(0,4)*12+ +mk.slice(5))+1,left=Math.max(0,annualBudget(k,fy)-fySpent[key]),use=left/monthsLeft;fySpent[key]+=use;hersh-=use*shares[k].hersh;sonali-=use*shares[k].sonali;});
+    // workplace pensions (gross, paid by employer and salary sacrifice)
+    S.workplace.forEach(w=>{if(mk>=w.from&&!(first&&mkOf(st.date)===mk&&+st.date.slice(8)>27))pens[w.pot]+=w.salary/12*(w.er+(mk>=w.eeFrom?w.ee:0));});
+    // growth and interest
+    ISAS.forEach(k=>{const c=S.rates.cash[k];const r=c?(mk<=c[1]?c[0]:S.rates.cashAfter):S.rates.ss;isas[k]*=1+monthlyRate(r)*(first?Math.max(0,daysBetween(st.date,end))/30.4:1);});
+    PENSIONS.forEach(k=>pens[k]*=1+monthlyRate(S.rates.pension)*(first?Math.max(0,daysBetween(st.date,end))/30.4:1));
+    mort+=mort*S.mortgageRate/12*(first?Math.max(0,daysBetween(st.date,end))/30.4:1);
+    const isaTot=ISAS.reduce((s,k)=>s+isas[k],0),penTot=PENSIONS.reduce((s,k)=>s+pens[k],0),cash=joint+hersh+sonali;
+    rows.push({mk,joint:r2(joint),hersh:r2(hersh),sonali:r2(sonali),float:r2(hersh+sonali),isas:Object.fromEntries(ISAS.map(k=>[k,r2(isas[k])])),isaTot:r2(isaTot),pens:Object.fromEntries(PENSIONS.map(k=>[k,r2(pens[k])])),penTot:r2(penTot),mort:r2(mort),nw:r2(cash+isaTot+penTot-mort)});
+    prevEnd=end;
+  }
+  return{rows,shares,start:st};
+}
+let FC_CACHE=null,FC_KEY="";
+function liveForecast(){const k=[TX.length,PLAN.length,PLANNED.length,RULES.length,Object.keys(ME).length,closedList().length,JSON.stringify(PLAN.map(p=>[p.amount,p.start,p.end])).length,todayISO()].join("|");if(k!==FC_KEY||!FC_CACHE){FC_CACHE=forecast(false);FC_KEY=k;}return FC_CACHE;}
+async function ensureBaseline(){ // the 17 October plan, saved once so progress is measured against what was agreed
+  if(BASELINE!==false||!PLAN.length||!OPENING)return;
+  const f=forecast(true),rows={};f.rows.forEach(r=>rows[r.mk]={float:r.float,joint:r.joint,isaTot:r.isaTot,penTot:r.penTot,mort:r.mort,nw:r.nw,isas:r.isas});
+  BASELINE={};try{await setDoc(doc(db,"v2meta","baseline"),{name:"17 October 2026 plan",createdAt:serverTimestamp(),horizon:S.horizon,rows});}catch(e){BASELINE=false;}
+}
+function vsPlan(actual,plan,higherIsBetter=true){const d=r2(actual-plan),good=higherIsBetter?d>=0:d<=0,pct=plan?Math.abs(d)/Math.abs(plan):0;
+  const chip=pct<0.01?`<span class="chip ok">On plan</span>`:good?`<span class="chip ok">Ahead ${money0(Math.abs(d))}</span>`:`<span class="chip warn">Behind ${money0(Math.abs(d))}</span>`;return{d,chip};}
+function recommendations(mid){
+  const f=liveForecast(),rows=f.rows,out=[];if(!rows.length)return out;
+  const next=addMonths(mid,1),nr=rows.filter(r=>r.mk>=next).slice(0,15);
+  // 1. surplus above the floor at the lowest point of the next 15 months
+  const low=nr.reduce((a,r)=>r.float<a.float?r:a,nr[0]||rows[0]);const spare=Math.floor(((low?.float||0)-S.floor)/100)*100;
+  if(spare>=1000){
+    const ty=taxYearOf(next),isaLeft=Math.max(0,40000-PLAN.filter(p=>ISAS.slice(0,2).includes(p.to)).reduce((s,p)=>{let t=0;for(let m=ty;m<=addMonths(ty,11);m=addMonths(m,1))if(planDue(p,m))t+=Number(p.amount);return s+t;},0));
+    const usable=ty>="2027-04"?isaLeft:0; // 2026/27 allowances are used
+    const from=low.hersh-S.personTarget>=low.sonali-S.personTarget?"Hersh Debit":"Sonali Debit";
+    if(usable>=1000){const v=Math.min(spare,usable);out.push({kind:"isa",text:`Spare cash: put ${money0(v)} into the S&S ISA`,why:`Lowest forecast float is ${money0(low.float)} in ${shortMonth(low.mk)}; ${money0(spare)} sits above the £10,000 floor. ISA first while allowance is left (${money0(usable)}).`,amount:v,from,to:from.startsWith("Sonali")?"Sonali S&S ISA":"Hersh S&S ISA",mk:next});}
+    else{const my=+next.slice(5)>=8?next.slice(0,4)+"-08":(+next.slice(0,4)-1)+"-08",limit=Math.floor(Number(startState().mort)*0.10),done=PLAN.filter(p=>p.to==="Mortgage").reduce((s,p)=>{let t=0;for(let m=my;m<=addMonths(my,11);m=addMonths(m,1))if(planDue(p,m))t+=Number(p.amount);return s+t;},0),room=Math.max(0,limit-done),v=Math.min(spare,room);
+      if(v>=1000)out.push({kind:"overpay",text:`Spare cash: overpay the mortgage by ${money0(v)}`,why:`Lowest forecast float is ${money0(low.float)} in ${shortMonth(low.mk)}; ${money0(spare)} sits above the £10,000 floor. ISA allowance is fully planned, so it goes to the mortgage (room this mortgage year ${money0(room)}).`,amount:v,from,to:"Mortgage",mk:next});}
+  }
+  // 2. rebalance between Hersh and Sonali, checked every few months
+  if(S.rebalanceMonths.includes(+mid.slice(5))){const r3=rows.filter(r=>r.mk>=next).slice(0,3);if(r3.length){
+    const minH=Math.min(...r3.map(r=>r.hersh)),minS=Math.min(...r3.map(r=>r.sonali));
+    [["sonali",minS,"hersh",minH,"Hersh Debit","Sonali Debit"],["hersh",minH,"sonali",minS,"Sonali Debit","Hersh Debit"]].forEach(([who,mn,other,omn,from,to])=>{
+      if(mn<S.personTarget){const need=Math.ceil((S.personTarget-mn)/100)*100;if(omn-need>=S.personTarget)out.push({kind:"rebalance",text:`Rebalance: move ${money0(need)} from ${other==="hersh"?"Hersh":"Sonali"} to ${who==="hersh"?"Hersh":"Sonali"}`,why:`${who==="hersh"?"Hersh's":"Sonali's"} account is forecast to dip to ${money0(mn)} in the next three months; the target is £5,000 each.`,amount:need,from,to,mk:next});}});}}
+  return out;
+}
+async function addRecToPlan(r){
+  const ref=doc(collection(db,"plan_items"));
+  await setDoc(ref,{name:r.kind==="isa"?"One-off S&S ISA top-up":r.kind==="overpay"?"One-off mortgage overpayment":"Rebalance transfer",account:r.from,kind:"transfer",to:r.to,amount:r.amount,day:10,basis:"fixed",freq:"oneoff",months:[],start:r.mk,end:"",status:"confirmed",manual:true,note:r.why,series:ref.id,createdAt:serverTimestamp()});
+  setStatus("Added to Plan for "+shortMonth(r.mk));
+}
+function lineChart(series,labels,opts={}){
+  const W=360,H=170,P={l:44,r:8,t:10,b:22},all=series.flatMap(s=>s.vals.filter(v=>v!=null)).concat(opts.floor!=null?[opts.floor]:[]);
+  let mn=Math.min(...all),mx=Math.max(...all);if(opts.zero)mn=Math.min(0,mn);const pad_=(mx-mn)*0.08||1;mn-=pad_;mx+=pad_;
+  const x=i=>P.l+(W-P.l-P.r)*i/Math.max(1,labels.length-1),y=v=>P.t+(H-P.t-P.b)*(1-(v-mn)/(mx-mn));
+  const ticks=[mn+pad_,(mn+mx)/2,mx-pad_];
+  const k=v=>Math.abs(v)>=1e6?"£"+(v/1e6).toFixed(1)+"m":"£"+Math.round(v/1000)+"k";
+  const path=vals=>vals.map((v,i)=>v==null?null:`${x(i).toFixed(1)},${y(v).toFixed(1)}`).filter(Boolean).join(" ");
+  const xl=labels.map((l,i)=>(i%(Math.ceil(labels.length/5))===0||i===labels.length-1)?`<text x="${x(i)}" y="${H-6}" font-size="9" text-anchor="middle" fill="#6B7280">${l}</text>`:"").join("");
+  return`<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${esc(opts.label||"chart")}" style="display:block;">
+   ${ticks.map(t=>`<line x1="${P.l}" x2="${W-P.r}" y1="${y(t)}" y2="${y(t)}" stroke="#e6e8ec"/><text x="${P.l-4}" y="${y(t)+3}" font-size="9" text-anchor="end" fill="#6B7280">${k(t)}</text>`).join("")}
+   ${opts.floor!=null?`<line x1="${P.l}" x2="${W-P.r}" y1="${y(opts.floor)}" y2="${y(opts.floor)}" stroke="#F2B705" stroke-width="1.5" stroke-dasharray="4 3"/>`:""}
+   ${series.map(s=>`<polyline fill="none" stroke="${s.color}" stroke-width="${s.w||2}" ${s.dash?`stroke-dasharray="${s.dash}"`:""} points="${path(s.vals)}"/>`).join("")}
+   ${xl}</svg><div class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px;">${series.map(s=>`<span><span style="display:inline-block;width:14px;height:2px;background:${s.color};vertical-align:middle;${s.dash?"opacity:.6":""}"></span> ${s.name}</span>`).join("")}${opts.floor!=null?`<span><span style="display:inline-block;width:14px;height:2px;background:#F2B705;vertical-align:middle;"></span> £10k floor</span>`:""}</div>`;
+}
+function renderPlanForecast(){
+  const f=liveForecast(),rows=f.rows,B=BASELINE&&BASELINE.rows?BASELINE.rows:null,end=rows[rows.length-1],be=B?.[S.horizon];
+  const lab=rows.map(r=>{const[y,m]=r.mk.split("-");return`${mon(+m)} ${y.slice(2)}`;});
+  const pl=k=>rows.map(r=>B?.[r.mk]?.[k]??null);
+  const low=rows.reduce((a,r)=>r.float<a.float?r:a,rows[0]);
+  const lc=lastClose(),lcRow=lc&&B?B[mkOf(lc.runDate)]:null;
+  const line=(label,a,b,hib=true)=>{const v=b!=null?vsPlan(a,b,hib):null;return`<div class="li"><div><div class="t">${label}</div><div class="d">Plan ${b!=null?money0(b):"not saved yet"}</div></div><div class="r"><div class="num" style="font-weight:600;">${money0(a)}</div><div style="margin-top:4px;">${v?v.chip:""}</div></div></div>`;};
+  // drivers since 17 October, from closed month-ends
+  let budgetVar=0,incomeVar=0;closedList().forEach(m=>{const mk=m.id,tx=TX.filter(t=>t.monthKey===mk);["dayToDay","riyaan"].forEach(k=>budgetVar+=monthBudget(k,mk)-potSpend(tx,k));
+    Object.entries(m.items||{}).forEach(([k,it])=>{const p=PLAN.find(x=>x.id===k.split("@")[0]);if(p&&p.kind==="in"&&it.amount!=null)incomeVar+=Number(it.amount)-Number(p.amount);});});
+  const recs=recommendations(currentMEId());
+  $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Every pot, month by month, to July 2030 (the end of the residential fix, when the mortgage is repriced). The dashed lines are the 17 October plan. Refreshes whenever you log, close a month or change the plan.</div>
+  ${fold("fc-2030","July 2030: on course?",B?`Net worth ${money0(end.nw)} vs plan ${money0(be.nw)}`:"Saving the 17 October plan...",B?vsPlan(end.nw,be.nw).chip:"",true,
+    `${line("Net worth (excluding the house)",end.nw,be?.nw)}${line("Mortgage left",end.mort,be?.mort,false)}${line("ISAs",end.isaTot,be?.isaTot)}${line("Pensions",end.penTot,be?.penTot)}${line("Float (Hersh + Sonali)",end.float,be?.float)}${line("Joint",end.joint,be?.joint)}
+     ${lc&&lcRow?`<div class="eyebrow" style="margin-top:12px;">So far, at the ${monthLabel(lc.id)} month-end</div><div class="calc"><span>Float vs plan</span><span class="num">${money(lc.float-lcRow.float,true)}</span><span>Day-to-day and Riyaan under (+) or over (-) budget</span><span class="num">${money(budgetVar,true)}</span><span>Pay vs plan</span><span class="num">${money(incomeVar,true)}</span><span>ISAs vs plan (includes market moves)</span><span class="num">${money(Object.values(lc.isas||{}).reduce((s,v)=>s+Number(v||0),0)-lcRow.isaTot,true)}</span></div>`:`<div class="note" style="margin-top:8px;">After your first month-end this also shows where you are against the plan today and why: spending against budget, pay against plan, and market moves on the ISAs.</div>`}`)}
+  ${recs.length?fold("fc-recs","Recommended moves",`${recs.length} from the forecast`,`<span class="chip warn">${recs.length}</span>`,true,recs.map((r,i)=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(r.text)}</div><div class="d">${esc(r.why)}</div><div class="row-btns"><button class="btn sm" data-rec="${i}">Add to Plan for ${shortMonth(r.mk)}</button></div></div></div>`).join("")):""}
+  ${fold("fc-float","Float",`Lowest ${money0(low.float)} in ${shortMonth(low.mk)}`,low.float<S.floor?`<span class="chip warn">Below floor</span>`:`<span class="chip ok">Above floor</span>`,true,lineChart([{name:"Forecast",vals:rows.map(r=>r.float),color:"#1D3461"},{name:"Plan",vals:pl("float"),color:"#6B7280",dash:"5 4",w:1.5},{name:"Joint",vals:rows.map(r=>r.joint),color:"#8FA3C8",w:1.5}],lab,{floor:S.floor,label:"Float forecast"}))}
+  ${fold("fc-nw","Net worth (excluding the house) and mortgage",`Mortgage ${money0(end.mort)} left in Jul 2030`,"",false,lineChart([{name:"Net worth",vals:rows.map(r=>r.nw),color:"#1D3461"},{name:"Plan",vals:pl("nw"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Net worth"})+lineChart([{name:"Mortgage",vals:rows.map(r=>r.mort),color:"#7A5300"},{name:"Plan",vals:pl("mort"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Mortgage"}))}
+  ${fold("fc-pots","Every pot, each April and July","Snapshots from the forecast","",false,(()=>{const pick=rows.filter(r=>/-(04|07)$/.test(r.mk)||r===rows[0]);const cols=[["Float","float"],["Joint","joint"],...ISAS.map(k=>[k,"isa:"+k]),["Pensions","penTot"],["Mortgage","mort"],["Net worth","nw"]];
+     return pick.map(r=>fold(`fc-snap-${r.mk}`,monthLabel(r.mk),`Net worth ${money0(r.nw)}`,"",false,`<div class="calc">${cols.map(([l,k])=>`<span>${l}</span><span class="num">${money0(k.startsWith("isa:")?r.isas[k.slice(4)]:r[k])}</span>`).join("")}</div>`,true)).join("");})())}
+  ${fold("fc-ass","Assumptions","Growth rates, spending split, pensions","",false,`<div class="calc">
+     <span>S&S ISAs and pensions</span><span class="num">${S.rates.ss*100}% a year</span>
+     <span>Hersh Cash ISA</span><span class="num">4.55% to Jun 27, then ${S.rates.cashAfter*100}%</span>
+     <span>Sonali Cash ISA</span><span class="num">4.42% to Jul 27, then ${S.rates.cashAfter*100}%</span>
+     <span>Mortgage</span><span class="num">3.84% to Jul 2030</span>
+     ${["dayToDay","riyaan","exceptionals","holidays"].map(k=>`<span>${potLabel(k)} split (${f.shares[k].basis})</span><span class="num">Hersh ${Math.round(f.shares[k].hersh*100)}% · Sonali ${Math.round(f.shares[k].sonali*100)}%</span>`).join("")}
+     <span>Hersh CIP pension (gross a month)</span><span class="num">${money0(115000/12*0.06)} employer, + ${money0(115000/12*0.03)} sacrifice from Dec 26</span>
+     <span>Sonali Imagination pension (gross a month)</span><span class="num">${money0(86000/12*0.05)} employer (assumed), + ${money0(86000/12*0.05)} sacrifice from Jan 27</span>
+     <span>Household Investment</span><span class="num">Not forecast; spare Joint cash</span></div>
+     <div class="note" style="margin-top:8px;">Planning assumptions, not predictions. If you move a cash ISA into a new fixed deal, tell me the rate and I'll update it.</div>`)}`;
+  $$("[data-rec]").forEach(b=>b.onclick=async()=>{try{await addRecToPlan(recs[+b.dataset.rec]);}catch(e){fail(e);}});
+}
+
 /* ================= MONTH-END ================= */
 let meOverride=null;
 async function meSave(mid,patch){try{await setDoc(doc(db,"month_ends",mid),{status:ME[mid]?.status==="closed"?"closed":"open",...patch,updatedAt:serverTimestamp()},{merge:true});}catch(err){fail(err);}}
@@ -773,7 +928,7 @@ function nextMoves(mid){
       else if(prev.name!==p.name)out.push({id:`nm-${p.id}`,text:`Switch ${prev.name} to ${p.name}: ${money(p.amount)} from ${shortMonth(p.start)}`,dueDate:addDays(occDate(p,p.start),-10),amount:p.amount});
       else if(Number(prev.amount)!==Number(p.amount)&&!p.manual)out.push({id:`nm-${p.id}`,text:`${p.name} changes from ${money(prev.amount)} to ${money(p.amount)} in ${shortMonth(p.start)}${p.kind==="transfer"?": update the standing order":""}`,dueDate:addDays(occDate(p,p.start),-10),amount:p.amount});
     }
-    if(p.end&&p.end>=mid&&p.end<=a&&p.freq!=="oneoff"&&!nextOf(p))out.push({id:`nm-end-${p.id}`,text:`Check ${p.name} stops after ${shortMonth(p.end)}${p.kind==="transfer"?" (cancel the standing order if needed)":""}`,dueDate:addDays(occDate(p,p.end),1)});
+    if(p.end&&p.end>=mid&&p.end<=a&&p.freq!=="oneoff"&&!p.endAction&&!nextOf(p))out.push({id:`nm-end-${p.id}`,text:`Check ${p.name} stops after ${shortMonth(p.end)}${p.kind==="transfer"?" (cancel the standing order if needed)":""}`,dueDate:addDays(occDate(p,p.end),1)});
     if(p.manual&&planDue(p,a))out.push({id:`nm-pay-${p.id}-${a}`,text:`Pay ${p.name}: about ${money(p.amount)} from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:occDate(p,a),amount:p.amount});
   });
   PLANNED.filter(x=>x.status==="planned"&&x.date>=a+"-01"&&x.date<=b+"-31").forEach(x=>out.push({id:`nm-pp-${x.id}`,text:`One-off: ${x.description} ${money(x.amount)} from ${x.account}`,dueDate:x.date,amount:x.amount}));
@@ -821,7 +976,7 @@ function renderME(){
   const step4=fold(`me-${mid}-s4`,`4. Mortgage, ISAs${c.pensionDue?" and pensions":""}`,"Record balances; growth and interest are worked out",
     (c.mortgage.close!=null&&c.isas.every(i=>i.close!=null))?ok():info("Optional"),false,
     `<div class="li"><div style="min-width:0;flex:1;"><div class="t">Mortgage (Nationwide)</div><div class="d">Opening ${money(c.mortgage.open)}${c.mortgage.close!=null?` · down ${money(-c.mortgage.change)} · interest implied ${money(c.mortgage.interest)}`:""}</div></div><div class="r"><input type="number" step="0.01" data-memort="close" value="${m.mortgage?.close??""}" placeholder="Balance" style="width:130px;"></div></div>
-    ${c.isas.map(i=>`<div class="li"><div style="min-width:0;flex:1;"><div class="t">${i.k}</div><div class="d">Opening ${money(i.open)} · in ${money(i.contrib)}${i.growth!=null?` · growth <b style="color:${i.growth<0?"var(--carmine-dark)":"var(--teal-dark)"}">${money(i.growth,true)}</b>`:""}</div></div><div class="r"><input type="number" step="0.01" data-meisa="${i.k}" value="${m.isas&&m.isas[i.k]!=null?m.isas[i.k]:""}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}
+    ${c.isas.map(i=>`<div class="li"><div style="min-width:0;flex:1;"><div class="t">${i.k}</div><div class="d">Opening ${money(i.open)} · in ${money(i.contrib,true)}${i.growth!=null?` · growth <b style="color:${i.growth<0?"var(--carmine-dark)":"var(--teal-dark)"}">${money(i.growth,true)}</b>`:""}</div></div><div class="r"><input type="number" step="0.01" data-meisa="${i.k}" value="${m.isas&&m.isas[i.k]!=null?m.isas[i.k]:""}" placeholder="Balance" style="width:130px;"></div></div>`).join("")}
     ${c.pensionDue?PENSIONS.map(k=>`<div class="li"><div><div class="t">${k}</div><div class="d">Last ${c.op.pensions?.[k]!=null?money(c.op.pensions[k]):"not set"}</div></div><div class="r"><input type="number" step="0.01" data-mepen="${k}" value="${m.pensions&&m.pensions[k]!=null?m.pensions[k]:""}" placeholder="Balance" style="width:130px;"></div></div>`).join(""):""}`);
   // step 5: budgets
   const tx=TX.filter(t=>t.monthKey===mid),fy=fyStart(mid),fyTx=TX.filter(t=>fyStart(t.monthKey)===fy&&t.monthKey<=mid);
@@ -830,8 +985,9 @@ function renderME(){
     `<div class="grid-2">${potCard("Day-to-day",potSpend(tx,"dayToDay"),monthBudget("dayToDay",mid))}${potCard("Riyaan",potSpend(tx,"riyaan"),monthBudget("riyaan",mid))}${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),"year to date")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy),"year to date")}</div><div class="calc"><span>Household Investment this month (no limit, from Joint)</span><span class="num tot">${money(potSpend(tx,"householdInvestment"))}</span></div>`);
   // step 6: next month's moves
   const moves=nextMoves(mid), existing=ACTIONS.filter(a=>a.status==="todo"&&a.dueDate<=addMonths(mid,1)+"-31"&&!a.id.startsWith("nm-"));
-  const step6=fold(`me-${mid}-s6`,"6. Next month's moves","What to set up, pay or stop; becomes actions when you close",moves.length?info(moves.length+" new"):ok("None"),firstStep===6&&moves.length>0,
-    (moves.length?moves.map(x=>`<div class="li"><div><div class="t">${esc(x.text)}</div><div class="d">By ${dateShort(x.dueDate)}</div></div>${x.amount?`<div class="r num">${money(x.amount)}</div>`:""}</div>`).join(""):`<div class="note">Nothing new to set up. Regular payments carry on as they are.</div>`)
+  const recs=recommendations(mid);
+  const step6=fold(`me-${mid}-s6`,"6. Next month's moves","What to set up, pay or stop; becomes actions when you close",(moves.length||recs.length)?info((moves.length+recs.length)+" new"):ok("None"),firstStep===6&&(moves.length+recs.length)>0,
+    (recs.length?`<div class="eyebrow" style="margin-top:4px;">Recommended from the forecast</div>`+recs.map((r,i)=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(r.text)}</div><div class="d">${esc(r.why)}</div><div class="row-btns"><button class="btn sm" data-merec="${i}">Add to Plan for ${shortMonth(r.mk)}</button></div></div></div>`).join("")+`<div class="eyebrow" style="margin-top:12px;">From the plan</div>`:"")+(moves.length?moves.map(x=>`<div class="li"><div><div class="t">${esc(x.text)}</div><div class="d">By ${dateShort(x.dueDate)}</div></div>${x.amount?`<div class="r num">${money(x.amount)}</div>`:""}</div>`).join(""):`<div class="note">Nothing new to set up. Regular payments carry on as they are.</div>`)
     +(existing.length?fold(`me-${mid}-s6x`,"Already on your actions",`${existing.length}`,"",false,existing.map(a=>`<div class="li"><div><div class="t">${esc(a.text)}</div><div class="d">${dateShort(a.dueDate)}</div></div></div>`).join(""),true):""));
   // close
   const notes=c.flags.filter(f=>!f.bad);
@@ -847,6 +1003,7 @@ function renderME(){
    ${c.float!=null?`<div class="calc"><span>Float</span><span class="num tot">${money(c.float)}</span><span>Above the £10,000 floor</span><span class="num">${money(c.float-S.floor,true)}</span></div>`:""}
    <div class="actions-row">${lastClose()?`<button class="btn ghost" id="meReopen" data-mid="${lastClose().id}">Reopen ${monthLabel(lastClose().id)}</button>`:""}<button class="btn accent" id="meClose" ${c.blockers?"disabled":""}>Close ${monthLabel(mid)}</button></div></div>`;
   wireME(mid,c);
+  $$("[data-merec]").forEach(b=>b.onclick=async()=>{try{await addRecToPlan(recs[+b.dataset.merec]);}catch(e){fail(e);}});
 }
 function wireME(mid,c){
   const m=c.m;
