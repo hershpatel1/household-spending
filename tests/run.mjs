@@ -131,6 +131,12 @@ await scenario('Month-end defaults to the last day of the month; work back from 
   check('card worked back to 31 Oct (today 1,740.85 owed less the 50 logged in Nov)', s.month_ends['2026-10']?.balances?.['Hersh Credit'] === -1690.85, JSON.stringify(s.month_ends['2026-10']?.balances));
 });
 
+await scenario('Review nudge on 15 March', '2027-03-15T09:00:00', async ({ page, store }) => {
+  check('March review shows on Home', (await page.textContent('#v-home')).includes('Year-end review with Claude'));
+  await page.click('[data-reviewdone="2027-03-15"]'); await page.waitForTimeout(200);
+  check('marking it done clears it', !(await page.textContent('#v-home')).includes('Year-end review with Claude') && !!(await store()).v2meta.reviews?.['2027-03-15']);
+});
+
 await scenario('Export everything, and the 6-monthly reminder', '2026-10-18T10:00:00', async ({ page, store, go }) => {
   check('export reminder shows when never exported', (await page.textContent('#v-home')).includes('Export a backup of everything'));
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-fold=home-actions] [data-export]')]);
