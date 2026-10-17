@@ -27,4 +27,4 @@ The app talks straight to the Firebase project `household-budget-e2592` (Firesto
 
 ## History
 
-The original spending tracker is preserved at the git tag `v1-final`.
+The original spending tracker is preserved in the history at commit `8830b7e` ("Update index.html"), the last commit before the rebuild.
