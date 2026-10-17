@@ -219,7 +219,7 @@ const ACCOUNTS=["Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit","Joi
 const BANK=ACCOUNTS.filter(a=>a!=="Cash");
 const CARDS=["Hersh Credit","Sonali Credit"];
 const PAID_BY=["Hersh","Sonali"];
-const POTS=[{key:"dayToDay",label:"Day-to-day",cycle:"monthly"},{key:"riyaan",label:"Riyaan",cycle:"monthly"},{key:"exceptionals",label:"Exceptionals",cycle:"annual"},{key:"holidays",label:"Holidays",cycle:"annual"}];
+const POTS=[{key:"dayToDay",label:"Day-to-day",cycle:"monthly"},{key:"riyaan",label:"Riyaan",cycle:"monthly"},{key:"exceptionals",label:"Exceptionals",cycle:"annual"},{key:"holidays",label:"Holidays",cycle:"annual"},{key:"householdInvestment",label:"Household Investment",cycle:"open"}];
 const UNITS=[{key:"joint",label:"Joint",accounts:["Joint"]},{key:"hersh",label:"Hersh",accounts:["Hersh Debit","Hersh Credit"]},{key:"sonali",label:"Sonali",accounts:["Sonali Debit","Sonali Credit"]}];
 const DESTS=["Mortgage","Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA","Pension"];
 const ISAS=["Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA"];
@@ -491,6 +491,11 @@ function potCard(label,spent,budget,sub){
   const pct=budget>0?Math.min(100,Math.max(0,spent/budget*100)):0,rem=budget-spent,over=budget>0&&spent>budget;
   return`<div class="card pot"><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track"><div class="fill ${over?"over":""}" style="width:${pct}%"></div></div><div class="rem ${rem<0?"neg":""}">${rem<0?"Over by "+money(-rem):money(rem)+" left"}</div></div>`;
 }
+function openPotCard(fy){
+  const mk=curMK(),fyTx=TX.filter(x=>fyStart(x.monthKey)===fy),spentFY=potSpend(fyTx,"householdInvestment"),spentM=potSpend(TX.filter(x=>x.monthKey===mk),"householdInvestment");
+  const lc=lastClose(),j=lc?lc.balances?.Joint:(OPENING||SEED_OPENING).balances.Joint,jd=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
+  return`<div class="card pot"><div class="name">Household Investment <span class="small muted" style="font-weight:400;">no limit, paid from Joint's spare cash</span></div><div class="amt"><span class="spent">${money(spentFY)}</span><span class="of">spent in ${fyLabel(fy)}</span></div><div class="rem">${money(spentM)} this month · Joint was ${money(j)} at ${dateShort(jd)}</div></div>`;
+}
 function actionRow(a){
   const overdue=a.status==="todo"&&a.dueDate<todayISO();
   const chip=a.status==="done"?`<span class="chip ok">Done</span>`:a.status==="skipped"?`<span class="chip grey">Skipped</span>`:overdue?`<span class="chip warn">Overdue</span>`:`<span class="chip">${dateShort(a.dueDate)}</span>`;
@@ -523,6 +528,7 @@ function renderHome(){
   </div>`)}</div>
   <div class="section"><div class="eyebrow">Budgets · ${monthLabel(mk)}</div><div class="grid-2">${potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk))}${potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk))}</div></div>
   <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")+annualBudget("holidays",fy)-potSpend(fyTx,"holidays"))} left across both`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy))}</div>`)}</div>
+  <div class="section">${openPotCard(fy)}</div>
   <div class="small muted" style="text-align:center;margin-bottom:12px;"><a href="../" style="color:var(--teal-dark);">Classic analytics</a></div>`;
   $("toggleActions").onclick=()=>{showAllActions=!showAllActions;renderHome();};
   $("addActionBtn").onclick=()=>$("actionForm").classList.toggle("hidden");
@@ -540,7 +546,8 @@ document.addEventListener("click",async e=>{
 let logType="spend",editingId=null;
 $("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS));
 function syncTo(){const u=unitOf($("fAccount").value);[...$("fTo").options].forEach(o=>o.hidden=!!u&&unitOf(o.value)===u);if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
-$("fAccount").addEventListener("change",syncTo);$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
+$("fAccount").addEventListener("change",syncTo);
+$("fPot").addEventListener("change",()=>{if($("fPot").value==="householdInvestment"){$("fAccount").value="Joint";syncTo();}});$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
 const HELP={spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"Only for one-off moves that aren't in Plan: between Hersh, Sonali and Joint, or an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test). Don't log credit card repayments: each person's card and current account are checked together at month-end, so repayments cancel out."};
 function setType(t){
   logType=t;$$("#typeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
@@ -714,8 +721,9 @@ function renderPlanBudgets(){
   $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Set once and carried forward. Monthly budgets apply to every month from the month you choose; annual budgets run April to March. A bonus logged as income tops up Exceptionals automatically. Future months in the forecast assume each budget is spent.</div>
   <div class="section"><div class="eyebrow">Monthly</div><div class="card">${["dayToDay","riyaan"].map(k=>`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${ruleRows(k)}</div></div><div class="r num" style="font-weight:600;">${money0(monthBudget(k,mk))} a month</div></div>`).join("")}</div></div>
   <div class="section"><div class="eyebrow">Annual</div><div class="card">${["exceptionals","holidays"].map(k=>`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${fyLabel(fy)}: ${money0(annualBudget(k,fy))}${k==="exceptionals"&&bonusesFor(fy)?` (incl. ${money0(bonusesFor(fy))} bonus)`:""} · ${fyLabel(nfy)}: ${money0(annualBudget(k,nfy))}</div></div></div>`).join("")}</div></div>
+  <div class="section"><div class="eyebrow">No limit</div><div class="card"><div class="li"><div><div class="t">Household Investment</div><div class="d">Spending for the home paid from Joint's spare cash. No set amount; tracked separately so it never eats into the other budgets.</div></div><div class="r num" style="font-weight:600;">${money0(potSpend(TX.filter(x=>fyStart(x.monthKey)===fy),"householdInvestment"))} in ${fyLabel(fy)}</div></div></div></div>
   <div class="card"><div class="eyebrow">Change a budget</div><form id="ruleForm" class="form-grid">
-    <label class="f">Budget<select id="rPot">${opts(POTS)}</select></label><label class="f">Amount (£)<input type="number" id="rAmt" min="0" step="1" required></label>
+    <label class="f">Budget<select id="rPot">${opts(POTS.filter(p=>p.cycle!=="open"))}</select></label><label class="f">Amount (£)<input type="number" id="rAmt" min="0" step="1" required></label>
     <label class="f full"><span id="rFromLbl">From month</span><input type="month" id="rFrom" value="${addMonths(mk,1)}"><select id="rFY" class="hidden">${opts([fy,nfy,addMonths(nfy,12)].map(k=>({key:k,label:fyLabel(k)})))}</select></label>
     <div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Save</button></div></form></div>`;
   const sync=()=>{const ann=POTS.find(p=>p.key===$("rPot").value).cycle==="annual";$("rFrom").classList.toggle("hidden",ann);$("rFY").classList.toggle("hidden",!ann);$("rFromLbl").textContent=ann?"From financial year":"From month";};
@@ -819,7 +827,7 @@ function renderME(){
   const tx=TX.filter(t=>t.monthKey===mid),fy=fyStart(mid),fyTx=TX.filter(t=>fyStart(t.monthKey)===fy&&t.monthKey<=mid);
   const over=[["dayToDay",potSpend(tx,"dayToDay"),monthBudget("dayToDay",mid)],["riyaan",potSpend(tx,"riyaan"),monthBudget("riyaan",mid)]].filter(x=>x[1]>x[2]).length;
   const step5=fold(`me-${mid}-s5`,"5. Budgets",`${monthLabel(mid)} and ${fyLabel(fy)} to date`,over?todo(over+" over"):ok("Within"),false,
-    `<div class="grid-2">${potCard("Day-to-day",potSpend(tx,"dayToDay"),monthBudget("dayToDay",mid))}${potCard("Riyaan",potSpend(tx,"riyaan"),monthBudget("riyaan",mid))}${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),"year to date")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy),"year to date")}</div>`);
+    `<div class="grid-2">${potCard("Day-to-day",potSpend(tx,"dayToDay"),monthBudget("dayToDay",mid))}${potCard("Riyaan",potSpend(tx,"riyaan"),monthBudget("riyaan",mid))}${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),"year to date")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy),"year to date")}</div><div class="calc"><span>Household Investment this month (no limit, from Joint)</span><span class="num tot">${money(potSpend(tx,"householdInvestment"))}</span></div>`);
   // step 6: next month's moves
   const moves=nextMoves(mid), existing=ACTIONS.filter(a=>a.status==="todo"&&a.dueDate<=addMonths(mid,1)+"-31"&&!a.id.startsWith("nm-"));
   const step6=fold(`me-${mid}-s6`,"6. Next month's moves","What to set up, pay or stop; becomes actions when you close",moves.length?info(moves.length+" new"):ok("None"),firstStep===6&&moves.length>0,
