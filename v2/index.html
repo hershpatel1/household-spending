@@ -538,16 +538,18 @@ document.addEventListener("click",async e=>{
 
 /* ================= LOG ================= */
 let logType="spend",editingId=null;
-$("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS));$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
-const HELP={spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"A move between your own accounts that isn't already a regular payment in Plan: paying off a credit card, a one-off move between you, or an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test)."};
+$("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS));
+function syncTo(){const u=unitOf($("fAccount").value);[...$("fTo").options].forEach(o=>o.hidden=!!u&&unitOf(o.value)===u);if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
+$("fAccount").addEventListener("change",syncTo);$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
+const HELP={spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"Only for one-off moves that aren't in Plan: between Hersh, Sonali and Joint, or an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test). Don't log credit card repayments: each person's card and current account are checked together at month-end, so repayments cancel out."};
 function setType(t){
   logType=t;$$("#typeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   const sp=t==="spend"||t==="refund";
   $$(".g-spend").forEach(el=>el.classList.toggle("hidden",!sp));$$(".g-transfer").forEach(el=>el.classList.toggle("hidden",t!=="transfer"));$$(".g-income").forEach(el=>el.classList.toggle("hidden",t!=="income"));
   $("accLabel").textContent=t==="transfer"?"From account":t==="income"?"Into account":"Account";
   $("retLabel").textContent=sp?"Retailer":"Description";
-  $("fRetailer").placeholder=sp?"e.g. Tesco":t==="transfer"?"e.g. Credit card repayment":"e.g. Bonus";
-  if(t==="transfer"&&$("fAccount").value===$("fTo").value)$("fTo").value=BANK.find(a=>a!==$("fAccount").value);
+  $("fRetailer").placeholder=sp?"e.g. Tesco":t==="transfer"?"e.g. Joint paying Hersh back":"e.g. Bonus";
+  if(t==="transfer")syncTo();
   $("typeHelp").textContent=HELP[t];
 }
 $$("#typeSeg button").forEach(b=>b.addEventListener("click",()=>setType(b.dataset.t)));setType("spend");
@@ -560,7 +562,8 @@ $("logForm").addEventListener("submit",async e=>{
   let p;
   if(logType==="spend"||logType==="refund")p={...base,type:"spend",direction:logType==="spend"?"out":"in",pot:$("fPot").value,category:$("fCategory").value,paidBy:$("fPaidBy").value,toAccount:null,bonus:false};
   else if(logType==="income")p={...base,type:"income",direction:"in",pot:"income",category:"Income",paidBy:ownerOf(account),toAccount:null,bonus:$("fBonus").checked};
-  else{const to=$("fTo").value;if(to===account)return setStatus("From and to must differ",true);p={...base,type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:ownerOf(account),toAccount:to,bonus:false};}
+  else{const to=$("fTo").value;if(to===account)return setStatus("From and to must differ",true);
+    if(unitOf(account)&&unitOf(account)===unitOf(to))return setStatus("No need to log this: a card repayment between your own card and current account cancels out at month-end.",true);p={...base,type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:ownerOf(account),toAccount:to,bonus:false};}
   try{if(editingId)await updateDoc(doc(db,"transactions",editingId),p);else await addDoc(collection(db,"transactions"),{...p,createdAt:serverTimestamp()});setStatus((editingId?"Saved ":"Added ")+money(value)+" · "+p.retailer);resetLog();}catch(err){fail(err);}
 });
 $("cancelEdit").addEventListener("click",resetLog);
