@@ -187,6 +187,11 @@ await scenario('Forecast and saved plan', '2026-10-17T22:30:00', async ({ page, 
   await go('plan'); await page.click('#planSeg button[data-ps=forecast]'); await page.waitForTimeout(300);
   const s = await store();
   check('plan saved once all data loaded', (s.v2meta.baseline?.v || 0) >= 2);
+  await page.click('#planSeg button[data-ps=oneoff]'); await page.waitForTimeout(100);
+  await page.fill('#ppDesc', 'Move Vida cash ISA to S&S'); await page.selectOption('#ppKind', 'transfer'); await page.fill('#ppDate', '2027-06-15'); await page.fill('#ppAmount', '30000'); await page.selectOption('#ppAccount', 'Hersh Cash ISA'); await page.selectOption('#ppTo', 'Hersh S&S ISA'); await page.click('#ppForm button[type=submit]'); await page.waitForTimeout(200);
+  const r = Object.fromEntries((await page.evaluate(() => liveForecastForTest())).map(x => [x.mk, x]));
+  check('a one-off ISA transfer moves money from cash to S&S in the forecast', r['2027-06'].isas['Hersh Cash ISA'] < r['2027-05'].isas['Hersh Cash ISA'] - 29000 && r['2027-06'].isas['Hersh S&S ISA'] > r['2027-05'].isas['Hersh S&S ISA'] + 29000);
+  await page.click('#planSeg button[data-ps=forecast]'); await page.waitForTimeout(200);
   check('July 2030 summary shows', (await page.textContent('#planBody')).includes('July 2030'));
 });
 

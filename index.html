@@ -522,7 +522,7 @@ function computeME(mid){
   const mOpen=Number(op.mortgage)||0;
   const mClose=m.mortgage?.close!=null&&m.mortgage.close!==""?Number(m.mortgage.close):null;
   const mortgage={open:mOpen,pay:r2(mPay),over:r2(mOver),close:mClose,change:mClose!=null?r2(mClose-mOpen):null,interest:mClose!=null?r2(mClose-mOpen+mPay+mOver):null};
-  const isas=ISAS.map(k=>{const contrib=occ.filter(o=>o.p.to===k).reduce((s,o)=>s+amtOf(o),0)+txs.filter(t=>t.toAccount===k).reduce((s,t)=>s+t.value,0)-txs.filter(t=>t.account===k).reduce((s,t)=>s+t.value,0);const open=Number(op.isas?.[k])||0;const close=m.isas&&m.isas[k]!=null&&m.isas[k]!==""?Number(m.isas[k]):null;return{k,open,contrib:r2(contrib),close,growth:close!=null?r2(close-open-contrib):null};});
+  const isas=ISAS.map(k=>{const contrib=occ.filter(o=>o.p.to===k).reduce((s,o)=>s+amtOf(o),0)-occ.filter(o=>o.p.account===k).reduce((s,o)=>s+amtOf(o),0)+txs.filter(t=>t.toAccount===k).reduce((s,t)=>s+t.value,0)-txs.filter(t=>t.account===k).reduce((s,t)=>s+t.value,0);const open=Number(op.isas?.[k])||0;const close=m.isas&&m.isas[k]!=null&&m.isas[k]!==""?Number(m.isas[k]):null;return{k,open,contrib:r2(contrib),close,growth:close!=null?r2(close-open-contrib):null};});
   const pensionDue=!op.pensionsAt||daysBetween(op.pensionsAt,runDate)>=182;
   const unresolved=occ.filter(o=>!resolved(o));
   const bal=m.balances||{};
@@ -879,7 +879,8 @@ function renderPlanOneoff(){
    <label class="f hidden" id="ppToL">To<select id="ppTo">${opts(BANK.concat(DESTS).map(k=>({key:k,label:accLabel(k)})))}</select></label>
    <div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
    <div class="note small" style="margin-top:8px;">A spend from a budget comes out of that budget, so the forecast doesn't count it twice. Payments, transfers and money in are ticked at month-end like regular payments.</div></div>`;
-  const sync=()=>{const k=$("ppKind").value;$("ppPotL").classList.toggle("hidden",k!=="budget");$("ppToL").classList.toggle("hidden",k!=="transfer");};$("ppKind").onchange=sync;sync();
+  const sync=()=>{const k=$("ppKind").value,cur=$("ppAccount").value;$("ppPotL").classList.toggle("hidden",k!=="budget");$("ppToL").classList.toggle("hidden",k!=="transfer");
+    $("ppAccount").innerHTML=opts(k==="transfer"?BANK.concat(ISAS):BANK);$("ppAccount").value=[...$("ppAccount").options].some(o=>o.value===cur)?cur:BANK[0];};$("ppKind").onchange=sync;sync();
   $("ppForm").onsubmit=async e=>{e.preventDefault();const k=$("ppKind").value,date=$("ppDate").value,amount=parseFloat($("ppAmount").value)||0,account=$("ppAccount").value,name=$("ppDesc").value.trim();
     try{if(k==="budget")await addDoc(collection(db,"planned_payments"),{description:name,date,amount,direction:"out",account,pot:$("ppPot").value,status:"planned",createdAt:serverTimestamp()});
       else{const to=$("ppTo").value;if(k==="transfer"&&to===account)return setStatus("From and to must differ",true);const ref=doc(collection(db,"plan_items"));await setDoc(ref,{name,account,kind:k,to:k==="transfer"?to:"",amount,day:+date.slice(8),basis:"fixed",freq:"oneoff",months:[],start:mkOf(date),end:"",status:"confirmed",manual:true,note:"",series:ref.id,createdAt:serverTimestamp()});}
@@ -921,7 +922,8 @@ function forecast(fromOpening){
   for(let mk=mkOf(st.date);mk<=S.horizon;mk=addMonths(mk,1)){
     const end=lastDay(mk), first=mk===mkOf(st.date);
     // regular payments and income
-    occurrences(prevEnd,end).forEach(o=>{const p=o.p,v=Number(p.amount);
+    occurrences(prevEnd,end).forEach(o=>{const p=o.p;let v=Number(p.amount);
+      if(ISAS.includes(p.account)){v=Math.min(v,isas[p.account]);isas[p.account]-=v;dest(p.to,v,p.account);return;}
       if(p.kind==="in")unitAdd(p.account,v);else{unitAdd(p.account,-v);if(p.kind==="transfer")dest(p.to,v,p.account);}
       if(p.role==="mortgage")mort-=v;});
     // what has actually happened since the start point (live forecast only)
@@ -1011,6 +1013,7 @@ function lineChart(series,labels,opts={}){
    ${series.map(s=>`<polyline fill="none" stroke="${s.color}" stroke-width="${s.w||2}" ${s.dash?`stroke-dasharray="${s.dash}"`:""} points="${path(s.vals)}"/>`).join("")}
    ${xl}</svg><div class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px;">${series.map(s=>`<span><span style="display:inline-block;width:14px;height:2px;background:${s.color};vertical-align:middle;${s.dash?"opacity:.6":""}"></span> ${s.name}</span>`).join("")}${opts.floor!=null?`<span><span style="display:inline-block;width:14px;height:2px;background:#F2B705;vertical-align:middle;"></span> £10k floor</span>`:""}</div>`;
 }
+window.liveForecastForTest=()=>liveForecast().rows;
 function renderPlanForecast(){
   const f=liveForecast(),rows=f.rows,B=BASELINE&&BASELINE.rows?BASELINE.rows:null,end=rows[rows.length-1],be=B?.[S.horizon];
   const lab=rows.map(r=>{const[y,m]=r.mk.split("-");return`${mon(+m)} ${y.slice(2)}`;});
