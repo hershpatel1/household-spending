@@ -137,6 +137,23 @@ await scenario('Review nudge on 15 March', '2027-03-15T09:00:00', async ({ page,
   check('marking it done clears it', !(await page.textContent('#v-home')).includes('Year-end review with Claude') && !!(await store()).v2meta.reviews?.['2027-03-15']);
 });
 
+await scenario('Planned budget spends show as planned against the right year', '2026-10-18T10:00:00', async ({ page, go }) => {
+  await go('plan'); await page.click('#planSeg button[data-ps=oneoff]'); await page.waitForTimeout(100);
+  await page.fill('#ppDesc', 'Summer holiday deposit'); await page.selectOption('#ppKind', 'budget'); await page.fill('#ppDate', '2027-05-01'); await page.fill('#ppAmount', '2000'); await page.selectOption('#ppPot', 'holidays'); await page.click('#ppForm button[type=submit]'); await page.waitForTimeout(150);
+  await page.click('#planSeg button[data-ps=budgets]'); await page.waitForTimeout(100);
+  check('next year shows £2,000 planned, £3,000 left', (await page.textContent('#planBody')).includes('£2,000 planned, £3,000 left'));
+  await go('home'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(100);
+  await go('plan'); await page.click('#planSeg button[data-ps=budgets]'); await page.waitForTimeout(100);
+  await page.click('#yearPill button[data-by="2027-04"]'); await page.waitForTimeout(100);
+  const y = await page.textContent('#planBody');
+  check('year switcher shows 2027/28 with the deposit planned', y.includes('Annual budgets · 2027/28') && y.includes('£2,000.00 planned'));
+  await page.click('#yearPill button[data-by="2029-04"]'); await page.waitForTimeout(100);
+  const y2 = await page.textContent('#planBody');
+  check('a later year shows carried-forward budgets', y2.includes('Annual budgets · 2029/30') && y2.includes('£650 a month') && y2.includes('£7,800 for the year'));
+  await go('home'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(100);
+  check('Home notes what is already planned for next year', (await page.textContent('#v-home')).includes('Already planned for 2027/28: Holidays £2,000 of £5,000'));
+});
+
 await scenario('Export everything, and the 6-monthly reminder', '2026-10-18T10:00:00', async ({ page, store, go }) => {
   check('export reminder shows when never exported', (await page.textContent('#v-home')).includes('Export a backup of everything'));
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-fold=home-actions] [data-export]')]);

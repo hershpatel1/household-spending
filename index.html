@@ -542,7 +542,10 @@ function computeME(mid){
 }
 
 /* ================= HOME ================= */
-function potCard(label,spent,budget,sub){
+function plannedFor(pot,fy,mk){return PLANNED.filter(x=>x.status==="planned"&&x.pot===pot&&(mk?x.date.slice(0,7)===mk:fyStart(x.date.slice(0,7))===fy)).reduce((s,x)=>s+Number(x.amount),0);}
+function potCard(label,spent,budget,sub,planned){
+  const pl=Number(planned)||0;if(pl){const pct=budget>0?Math.min(100,Math.max(0,spent/budget*100)):0,ppct=budget>0?Math.min(100-pct,Math.max(0,pl/budget*100)):0,rem=budget-spent-pl,over=budget>0&&spent+pl>budget;
+    return`<div class="card pot"><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track" style="display:flex;"><div class="fill ${over?"over":""}" style="width:${pct}%;border-radius:4px 0 0 4px;"></div><div style="width:${ppct}%;height:100%;background:repeating-linear-gradient(45deg,var(--teal-light),var(--teal-light) 3px,#fff 3px,#fff 6px);"></div></div><div class="rem ${rem<0?"neg":""}">${money(pl)} planned · ${rem<0?"over by "+money(-rem):money(rem)+" left"}</div></div>`;}
   const pct=budget>0?Math.min(100,Math.max(0,spent/budget*100)):0,rem=budget-spent,over=budget>0&&spent>budget;
   return`<div class="card pot"><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track"><div class="fill ${over?"over":""}" style="width:${pct}%"></div></div><div class="rem ${rem<0?"neg":""}">${rem<0?"Over by "+money(-rem):money(rem)+" left"}</div></div>`;
 }
@@ -611,8 +614,9 @@ function renderHome(){
     <form id="actionForm" class="form-grid hidden" style="margin-top:12px;"><label class="f full">What<input id="aText" required></label><label class="f">Due<input type="date" id="aDue" value="${t}" required></label><label class="f">Owner<select id="aOwner"><option>Hersh</option><option>Sonali</option><option>Either</option></select></label><label class="f">Amount (£)<input type="number" step="0.01" id="aAmount"></label><label class="f">Why<input id="aReason"></label><div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
   </div>`)}</div>
   <div class="section"><div class="acc-h"><div class="eyebrow" style="margin:0;">Budgets · ${potScope==="ytd"?fyLabel(fy)+" to date":monthLabel(mk)}</div><div class="pill" id="potPill"><button data-scope="month" class="${potScope==="month"?"on":""}">Month</button><button data-scope="ytd" class="${potScope==="ytd"?"on":""}">Year to date</button></div></div>
-   <div class="grid-2">${potScope==="ytd"?["dayToDay","riyaan"].map(k=>{const y=ytdPot(k,mk);return potCard(potLabel(k),y.sp,y.b,`${shortMonth(fy)} to ${shortMonth(mk)}`);}).join(""):potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk))+potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk))}</div></div>
-  <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")+annualBudget("holidays",fy)-potSpend(fyTx,"holidays"))} left across both`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"")}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy))}</div>`)}</div>
+   <div class="grid-2">${potScope==="ytd"?["dayToDay","riyaan"].map(k=>{const y=ytdPot(k,mk);return potCard(potLabel(k),y.sp,y.b,`${shortMonth(fy)} to ${shortMonth(mk)}`);}).join(""):potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk),"",plannedFor("dayToDay",null,mk))+potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk),"",plannedFor("riyaan",null,mk))}</div></div>
+  <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")-plannedFor("exceptionals",fy)+annualBudget("holidays",fy)-potSpend(fyTx,"holidays")-plannedFor("holidays",fy))} left across both after planned`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"",plannedFor("exceptionals",fy))}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy),"",plannedFor("holidays",fy))}</div>
+    ${["exceptionals","holidays"].some(k=>plannedFor(k,addMonths(fy,12)))?`<div class="note small" style="margin-top:8px;">Already planned for ${fyLabel(addMonths(fy,12))}: ${["exceptionals","holidays"].filter(k=>plannedFor(k,addMonths(fy,12))).map(k=>`${potLabel(k)} ${money0(plannedFor(k,addMonths(fy,12)))} of ${money0(annualBudget(k,addMonths(fy,12)))}`).join(", ")}.</div>`:""}`)}</div>
   <div class="section">${openPotCard(fy)}</div>
 `;
   (()=>{const d=document.createElement("div");d.className="section";d.innerHTML=fold("home-data","Your data",EXPORTS&&EXPORTS.lastAt?`Last exported ${dateShort(EXPORTS.lastAt.slice(0,10))}`:"Not exported yet","",false,`<div class="note">One file with everything: transactions, plan, budgets, month-ends, the saved plan and the forecast. Use it as a backup, or upload it to Claude for a financial review.</div><div class="actions-row"><button class="btn" data-export>Export everything</button></div>`);$("v-home").appendChild(d);})();
@@ -817,17 +821,34 @@ document.addEventListener("submit",async e=>{
     setStatus("Plan updated");planMode=null;adding=false;planOpen=null;renderPlan();
   }catch(err){fail(err);}
 });
+let budgetYear=null;
+function yearView(Y){
+  const months=[];for(let m=Y;m<=addMonths(Y,11);m=addMonths(m,1))months.push(m);
+  const cur=curMK(),past=m=>m<=cur;
+  const yTx=TX.filter(t=>fyStart(t.monthKey)===Y);
+  const ann=["exceptionals","holidays"].map(k=>{const b=annualBudget(k,Y),sp=potSpend(yTx,k),pl=plannedFor(k,Y);return potCard(potLabel(k),sp,b,k==="exceptionals"&&bonusesFor(Y)?`incl. ${money0(bonusesFor(Y))} bonus`:"",pl);}).join("");
+  const mon=["dayToDay","riyaan"].map(k=>{const amts=months.map(m=>monthBudget(k,m)),tot=amts.reduce((s,v)=>s+v,0),sp=months.filter(past).reduce((s,m)=>s+potSpend(TX.filter(t=>t.monthKey===m),k),0),uniq=[...new Set(amts)];
+    return`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${uniq.length===1?money0(uniq[0])+" a month":uniq.map(v=>money0(v)).join(" then ")+" a month"}${months.some(past)?` · ${money0(sp)} spent so far`:""}</div></div><div class="r num" style="font-weight:600;">${money0(tot)} for the year</div></div>`;}).join("");
+  return`<div class="section"><div class="eyebrow">Annual budgets · ${fyLabel(Y)}</div><div class="grid-2">${ann}</div></div>
+    <div class="section"><div class="eyebrow">Monthly budgets · ${fyLabel(Y)}</div><div class="card">${mon}</div></div>`;
+}
 function renderPlanBudgets(){
   const mk=curMK(),fy=fyStart(mk),nfy=addMonths(fy,12);
+  const years=[];for(let y=+fy.slice(0,4);y<=2030;y++)years.push(`${y}-04`);
+  if(!budgetYear||!years.includes(budgetYear))budgetYear=fy;
   const ruleRows=pot=>RULES.filter(r=>r.pot===pot).sort((a,b)=>a.from.localeCompare(b.from)).map(r=>`${money0(r.amount)} from ${pot==="exceptionals"||pot==="holidays"?fyLabel(r.from):shortMonth(r.from)}`).join(" · ");
   $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Set once and carried forward. Monthly budgets apply to every month from the month you choose; annual budgets run April to March. A bonus logged as income tops up Exceptionals automatically. Future months in the forecast assume each budget is spent.</div>
-  <div class="section"><div class="eyebrow">Monthly</div><div class="card">${["dayToDay","riyaan"].map(k=>`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${ruleRows(k)}</div></div><div class="r num" style="font-weight:600;">${money0(monthBudget(k,mk))} a month</div></div>`).join("")}</div></div>
-  <div class="section"><div class="eyebrow">Annual</div><div class="card">${["exceptionals","holidays"].map(k=>`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${fyLabel(fy)}: ${money0(annualBudget(k,fy))}${k==="exceptionals"&&bonusesFor(fy)?` (incl. ${money0(bonusesFor(fy))} bonus)`:""} · ${fyLabel(nfy)}: ${money0(annualBudget(k,nfy))}</div></div></div>`).join("")}</div></div>
+  <div class="filter-scroll" style="margin-bottom:12px;"><div class="pill" id="yearPill">${years.map(y=>`<button data-by="${y}" class="${y===budgetYear?"on":""}">${fyLabel(y)}</button>`).join("")}</div></div>
+  ${yearView(budgetYear)}
+  <div class="section"><div class="eyebrow">How they're set</div><div class="card">${["dayToDay","riyaan"].map(k=>`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${ruleRows(k)}</div></div><div class="r num" style="font-weight:600;">${money0(monthBudget(k,mk))} a month</div></div>`).join("")}</div></div>
+  <div class="section"><div class="eyebrow">Annual</div><div class="card">${["exceptionals","holidays"].map(k=>`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${fyLabel(fy)}: ${money0(annualBudget(k,fy))}${k==="exceptionals"&&bonusesFor(fy)?` (incl. ${money0(bonusesFor(fy))} bonus)`:""}${plannedFor(k,fy)?`, ${money0(plannedFor(k,fy))} planned`:""} · ${fyLabel(nfy)}: ${money0(annualBudget(k,nfy))}${plannedFor(k,nfy)?`, ${money0(plannedFor(k,nfy))} planned, ${money0(annualBudget(k,nfy)-plannedFor(k,nfy))} left`:""}</div></div></div>`).join("")}</div></div>
   <div class="section"><div class="eyebrow">No limit</div><div class="card"><div class="li"><div><div class="t">Household Investment</div><div class="d">Spending for the home paid from Joint's spare cash. No set amount; tracked separately so it never eats into the other budgets.</div></div><div class="r num" style="font-weight:600;">${money0(potSpend(TX.filter(x=>fyStart(x.monthKey)===fy),"householdInvestment"))} in ${fyLabel(fy)}</div></div></div></div>
   <div class="card"><div class="eyebrow">Change a budget</div><form id="ruleForm" class="form-grid">
     <label class="f">Budget<select id="rPot">${opts(POTS.filter(p=>p.cycle!=="open"))}</select></label><label class="f">Amount (£)<input type="number" id="rAmt" min="0" step="1" required></label>
-    <label class="f full"><span id="rFromLbl">From month</span><input type="month" id="rFrom" value="${addMonths(mk,1)}"><select id="rFY" class="hidden">${opts([fy,nfy,addMonths(nfy,12)].map(k=>({key:k,label:fyLabel(k)})))}</select></label>
+    <label class="f full"><span id="rFromLbl">From month</span><input type="month" id="rFrom" value="${addMonths(mk,1)}"><select id="rFY" class="hidden">${opts(years.map(k=>({key:k,label:fyLabel(k)})))}</select></label>
     <div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Save</button></div></form></div>`;
+  $$("#yearPill button").forEach(b=>b.onclick=()=>{budgetYear=b.dataset.by;renderPlanBudgets();});
+  if(budgetYear>fy){$("rFrom").value=budgetYear;if([...$("rFY").options].some(o=>o.value===budgetYear))$("rFY").value=budgetYear;}
   const sync=()=>{const ann=POTS.find(p=>p.key===$("rPot").value).cycle==="annual";$("rFrom").classList.toggle("hidden",ann);$("rFY").classList.toggle("hidden",!ann);$("rFromLbl").textContent=ann?"From financial year":"From month";};
   $("rPot").onchange=sync;sync();
   $("ruleForm").onsubmit=async e=>{e.preventDefault();const pot=$("rPot").value,ann=POTS.find(p=>p.key===pot).cycle==="annual",from=ann?$("rFY").value:$("rFrom").value,amount=parseFloat($("rAmt").value)||0;
