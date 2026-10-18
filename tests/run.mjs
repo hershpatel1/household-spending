@@ -154,6 +154,36 @@ await scenario('Planned budget spends show as planned against the right year', '
   check('Home notes what is already planned for next year', (await page.textContent('#v-home')).includes('Already planned for 2027/28: Holidays £2,000 of £5,000'));
 });
 
+await scenario('Budget cards open Transactions with the right filters; one-offs carry a category', '2026-10-18T10:00:00', async ({ page, go, store }) => {
+  await go('log'); await page.selectOption('#fPot', 'riyaan'); await page.fill('#fValue', '20'); await page.fill('#fRetailer', 'Nappies'); await page.click('#submitBtn'); await page.waitForTimeout(100);
+  await go('log'); await page.selectOption('#fPot', 'holidays'); await page.fill('#fValue', '300'); await page.fill('#fRetailer', 'Flights'); await page.click('#submitBtn'); await page.waitForTimeout(100);
+  await go('plan'); await page.click('#planSeg button[data-ps=oneoff]'); await page.waitForTimeout(100);
+  check('category field shows for a budget spend', await page.isVisible('#ppCat'));
+  await page.selectOption('#ppKind', 'out'); await page.waitForTimeout(50); check('category hidden for a payment out', !(await page.isVisible('#ppCat')));
+  await page.selectOption('#ppKind', 'budget');
+  await page.fill('#ppDesc', 'Hotel balance'); await page.fill('#ppDate', '2027-02-01'); await page.fill('#ppAmount', '500'); await page.selectOption('#ppPot', 'holidays'); await page.selectOption('#ppCat', 'Travel & Parking'); await page.click('#ppForm button[type=submit]'); await page.waitForTimeout(150);
+  const pp = Object.values((await store()).planned_payments).find(x => x.description === 'Hotel balance');
+  check('planned spend saves its category', pp && pp.category === 'Travel & Parking');
+  await go('home'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(100);
+  await page.locator('#v-home [data-drill*="riyaan%22"]').first().click({ timeout: 4000 }); await page.waitForTimeout(150);
+  let feed = await page.textContent('#v-feed');
+  check('Riyaan card opens Transactions filtered to Riyaan this month', (await page.inputValue('#flPot')) === 'riyaan' && (await page.inputValue('#flPeriod')) === 'this' && (await page.inputValue('#flType')) === 'spend' && feed.includes('Nappies') && !feed.includes('Flights'));
+  await go('home'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(100);
+  await page.click('#v-home [data-drill*="holidays%22"]'); await page.waitForTimeout(150);
+  feed = await page.textContent('#v-feed');
+  check('Holidays card opens the year to date, and notes what is planned', (await page.inputValue('#flPeriod')) === 'fy' && feed.includes('Flights') && feed.includes('Plus £500.00 planned, not yet paid: Hotel balance'));
+  await go('plan'); await page.click('#planSeg button[data-ps=budgets]'); await page.waitForTimeout(100); await page.click('#yearPill button[data-by="2027-04"]'); await page.waitForTimeout(100);
+  await page.click('#planBody [data-drill*="holidays%22"]'); await page.waitForTimeout(150);
+  check('a future year opens a custom range for that year', (await page.inputValue('#flPeriod')) === 'custom' && (await page.inputValue('#flFrom')) === '2027-04-01' && (await page.inputValue('#flToDate')) === '2028-03-31');
+  await go('plan'); await page.click('#planSeg button[data-ps=oneoff]'); await page.waitForTimeout(100);
+  const ppId = Object.entries((await store()).planned_payments).find(([, x]) => x.description === 'Hotel balance')[0]; const pay = 'pp:' + ppId;
+  await page.click(`[data-pay="${pay}"]`); await page.waitForTimeout(100);
+  check('Paid sheet pre-selects the saved category', (await page.inputValue(`[data-payform="${pay}"] select[name=category]`)) === 'Travel & Parking');
+  await page.click(`[data-payform="${pay}"] button:not([type=button])`); await page.waitForTimeout(150);
+  const t = Object.values((await store()).transactions).find(x => x.retailer === 'Hotel balance');
+  check('paid one-off logs with its category', t && t.category === 'Travel & Parking' && t.pot === 'holidays');
+});
+
 await scenario('Export everything, and the 6-monthly reminder', '2026-10-18T10:00:00', async ({ page, store, go }) => {
   check('export reminder shows when never exported', (await page.textContent('#v-home')).includes('Export a backup of everything'));
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-fold=home-actions] [data-export]')]);

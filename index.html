@@ -88,6 +88,8 @@ input[type=checkbox]{width:20px;min-height:20px;height:20px;}
 .chip.grey{background:var(--bg-2);color:var(--muted);}
 .chip.ok{background:var(--teal-surface);color:var(--teal-deep);}
 .filters{position:sticky;top:58px;z-index:10;background:var(--bg-1);padding:6px 0 10px;}
+[data-drill]{cursor:pointer;}
+.drill-chev{float:right;color:var(--teal-dark);font-weight:600;font-size:18px;line-height:1;}
 .filter-scroll{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none;}
 .filter-scroll::-webkit-scrollbar{display:none;}
 .filter-scroll select{width:auto;flex:0 0 auto;font-size:14px;padding:7px 8px;min-height:36px;border-radius:20px;}
@@ -189,7 +191,7 @@ details.fold.inner>.fb{padding:0 12px 10px;}
       </div>
       <div class="hidden" id="customRange" style="display:flex;gap:8px;margin-top:8px;"><input type="date" id="flFrom"><input type="date" id="flToDate"></div>
       <input type="search" id="flSearch" placeholder="Search retailer" style="margin-top:8px;">
-      <div class="summary"><span id="feedCount"></span><span id="feedTotal" class="num"></span></div>
+      <div class="summary"><span id="feedCount"></span><span id="feedTotal" class="num"></span></div><div id="feedPlanned" style="margin-top:6px;"></div>
     </div>
     <div id="feed"></div>
   </section>
@@ -262,7 +264,7 @@ const dateLong=iso=>{const[y,m,d]=iso.split("-").map(Number);return new Date(y,m
 const dateShort=iso=>{const[y,m,d]=iso.split("-").map(Number);return new Date(y,m-1,d).toLocaleDateString("en-GB",{day:"numeric",month:"short"});};
 const r2=n=>Math.round((Number(n)||0)*100)/100;
 const money=(n,signed)=>{const v=r2(n);const s="£"+Math.abs(v).toLocaleString("en-GB",{minimumFractionDigits:2,maximumFractionDigits:2});return signed?(v<0?"-":v>0?"+":"")+s:(v<0?"-"+s:s);};
-const money0=n=>"£"+Math.round(Number(n)||0).toLocaleString("en-GB");
+const money0=n=>{const v=Math.round(Number(n)||0);return(v<0?"-":"")+"£"+Math.abs(v).toLocaleString("en-GB");};
 const esc=s=>{const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML;};
 const opts=(list,all)=>(all?`<option value="">${all}</option>`:"")+list.map(o=>{const v=typeof o==="string"?o:o.key,l=typeof o==="string"?o:o.label;return`<option value="${esc(v)}">${esc(l)}</option>`;}).join("");
 const store={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d;}catch(e){return d;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}};
@@ -543,11 +545,22 @@ function computeME(mid){
 
 /* ================= HOME ================= */
 function plannedFor(pot,fy,mk){return PLANNED.filter(x=>x.status==="planned"&&x.pot===pot&&(mk?x.date.slice(0,7)===mk:fyStart(x.date.slice(0,7))===fy)).reduce((s,x)=>s+Number(x.amount),0);}
-function potCard(label,spent,budget,sub,planned){
+const drillAttr=d=>d?` data-drill="${encodeURIComponent(JSON.stringify(d))}" role="button" tabindex="0"`:"";
+const drillHint=d=>d?`<span class="drill-chev" aria-hidden="true">›</span>`:"";
+// tap a budget card -> Transactions with that budget and period set
+function fyDrill(pot,fy){return fy===fyStart(curMK())?{pot,period:"fy"}:{pot,period:"custom",from:fy+"-01",to:addMonths(fy,11)+"-31"};}
+function openDrill(d){
+  Object.assign(FL,{period:"this",pot:"",account:"",category:"",paidBy:"",dir:"",type:"",from:"",to:""},{type:"spend"},d);FL.q="";$("flSearch").value="";
+  Object.entries(FMAP).forEach(([id,k])=>{const el=$(id);el.value=FL[k]||(el.tagName==="SELECT"?el.options[0].value:"");});
+  store.set("v2.feedFilters",{...FL,q:""});go("feed");
+}
+document.addEventListener("click",e=>{const c=e.target.closest("[data-drill]");if(!c||e.target.closest("button,a,input,select"))return;try{openDrill(JSON.parse(decodeURIComponent(c.dataset.drill)));}catch(err){fail(err);}});
+document.addEventListener("keydown",e=>{if(e.key!=="Enter")return;const c=e.target.closest&&e.target.closest("[data-drill]");if(c)openDrill(JSON.parse(decodeURIComponent(c.dataset.drill)));});
+function potCard(label,spent,budget,sub,planned,drill){
   const pl=Number(planned)||0;if(pl){const pct=budget>0?Math.min(100,Math.max(0,spent/budget*100)):0,ppct=budget>0?Math.min(100-pct,Math.max(0,pl/budget*100)):0,rem=budget-spent-pl,over=budget>0&&spent+pl>budget;
-    return`<div class="card pot"><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track" style="display:flex;"><div class="fill ${over?"over":""}" style="width:${pct}%;border-radius:4px 0 0 4px;"></div><div style="width:${ppct}%;height:100%;background:repeating-linear-gradient(45deg,var(--teal-light),var(--teal-light) 3px,#fff 3px,#fff 6px);"></div></div><div class="rem ${rem<0?"neg":""}">${money(pl)} planned · ${rem<0?"over by "+money(-rem):money(rem)+" left"}</div></div>`;}
+    return`<div class="card pot"${drillAttr(drill)}><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}${drillHint(drill)}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track" style="display:flex;"><div class="fill ${over?"over":""}" style="width:${pct}%;border-radius:4px 0 0 4px;"></div><div style="width:${ppct}%;height:100%;background:repeating-linear-gradient(45deg,var(--teal-light),var(--teal-light) 3px,#fff 3px,#fff 6px);"></div></div><div class="rem ${rem<0?"neg":""}">${money(pl)} planned · ${rem<0?"over by "+money(-rem):money(rem)+" left"}</div></div>`;}
   const pct=budget>0?Math.min(100,Math.max(0,spent/budget*100)):0,rem=budget-spent,over=budget>0&&spent>budget;
-  return`<div class="card pot"><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track"><div class="fill ${over?"over":""}" style="width:${pct}%"></div></div><div class="rem ${rem<0?"neg":""}">${rem<0?"Over by "+money(-rem):money(rem)+" left"}</div></div>`;
+  return`<div class="card pot"${drillAttr(drill)}><div class="name">${label}${sub?` <span class="small muted" style="font-weight:400;">${sub}</span>`:""}${drillHint(drill)}</div><div class="amt"><span class="spent">${money(spent)}</span><span class="of">of ${money(budget)}</span></div><div class="track"><div class="fill ${over?"over":""}" style="width:${pct}%"></div></div><div class="rem ${rem<0?"neg":""}">${rem<0?"Over by "+money(-rem):money(rem)+" left"}</div></div>`;
 }
 const EXPORT_EVERY_DAYS=182;
 // household reviews: 15 March (tax year-end prep) and 15 September
@@ -572,7 +585,7 @@ document.addEventListener("click",e=>{if(e.target.closest("[data-export]"))expor
 function openPotCard(fy){
   const mk=curMK(),fyTx=TX.filter(x=>fyStart(x.monthKey)===fy),spentFY=potSpend(fyTx,"householdInvestment"),spentM=potSpend(TX.filter(x=>x.monthKey===mk),"householdInvestment");
   const lc=lastClose(),j=lc?lc.balances?.Joint:(OPENING||SEED_OPENING).balances.Joint,jd=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
-  return`<div class="card pot"><div class="name">Household Investment <span class="small muted" style="font-weight:400;">no limit, paid from Joint's spare cash</span></div><div class="amt"><span class="spent">${money(spentFY)}</span><span class="of">spent in ${fyLabel(fy)}</span></div><div class="rem">${money(spentM)} this month · Joint was ${money(j)} at ${dateShort(jd)}</div></div>`;
+  const dr=fyDrill("householdInvestment",fy);return`<div class="card pot"${drillAttr(dr)}><div class="name">Household Investment <span class="small muted" style="font-weight:400;">no limit, paid from Joint's spare cash</span>${drillHint(dr)}</div><div class="amt"><span class="spent">${money(spentFY)}</span><span class="of">spent in ${fyLabel(fy)}</span></div><div class="rem">${money(spentM)} this month · Joint was ${money(j)} at ${dateShort(jd)}</div></div>`;
 }
 function actionRow(a){
   const overdue=a.status==="todo"&&a.dueDate<todayISO();
@@ -614,8 +627,8 @@ function renderHome(){
     <form id="actionForm" class="form-grid hidden" style="margin-top:12px;"><label class="f full">What<input id="aText" required></label><label class="f">Due<input type="date" id="aDue" value="${t}" required></label><label class="f">Owner<select id="aOwner"><option>Hersh</option><option>Sonali</option><option>Either</option></select></label><label class="f">Amount (£)<input type="number" step="0.01" id="aAmount"></label><label class="f">Why<input id="aReason"></label><div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
   </div>`)}</div>
   <div class="section"><div class="acc-h"><div class="eyebrow" style="margin:0;">Budgets · ${potScope==="ytd"?fyLabel(fy)+" to date":monthLabel(mk)}</div><div class="pill" id="potPill"><button data-scope="month" class="${potScope==="month"?"on":""}">Month</button><button data-scope="ytd" class="${potScope==="ytd"?"on":""}">Year to date</button></div></div>
-   <div class="grid-2">${potScope==="ytd"?["dayToDay","riyaan"].map(k=>{const y=ytdPot(k,mk);return potCard(potLabel(k),y.sp,y.b,`${shortMonth(fy)} to ${shortMonth(mk)}`);}).join(""):potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk),"",plannedFor("dayToDay",null,mk))+potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk),"",plannedFor("riyaan",null,mk))}</div></div>
-  <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")-plannedFor("exceptionals",fy)+annualBudget("holidays",fy)-potSpend(fyTx,"holidays")-plannedFor("holidays",fy))} left across both after planned`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"",plannedFor("exceptionals",fy))}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy),"",plannedFor("holidays",fy))}</div>
+   <div class="grid-2">${potScope==="ytd"?["dayToDay","riyaan"].map(k=>{const y=ytdPot(k,mk);return potCard(potLabel(k),y.sp,y.b,`${shortMonth(fy)} to ${shortMonth(mk)}`,0,{pot:k,period:"fy"});}).join(""):potCard("Day-to-day",potSpend(mtx,"dayToDay"),monthBudget("dayToDay",mk),"",plannedFor("dayToDay",null,mk),{pot:"dayToDay",period:"this"})+potCard("Riyaan",potSpend(mtx,"riyaan"),monthBudget("riyaan",mk),"",plannedFor("riyaan",null,mk),{pot:"riyaan",period:"this"})}</div></div>
+  <div class="section">${fold("home-annual",`Annual budgets · ${fyLabel(fy)}`,`${money0(annualBudget("exceptionals",fy)-potSpend(fyTx,"exceptionals")-plannedFor("exceptionals",fy)+annualBudget("holidays",fy)-potSpend(fyTx,"holidays")-plannedFor("holidays",fy))} left across both after planned`,"",false,`<div class="grid-2">${potCard("Exceptionals",potSpend(fyTx,"exceptionals"),annualBudget("exceptionals",fy),bonusesFor(fy)?`incl. ${money0(bonusesFor(fy))} bonus`:"",plannedFor("exceptionals",fy),fyDrill("exceptionals",fy))}${potCard("Holidays",potSpend(fyTx,"holidays"),annualBudget("holidays",fy),"",plannedFor("holidays",fy),fyDrill("holidays",fy))}</div>
     ${["exceptionals","holidays"].some(k=>plannedFor(k,addMonths(fy,12)))?`<div class="note small" style="margin-top:8px;">Already planned for ${fyLabel(addMonths(fy,12))}: ${["exceptionals","holidays"].filter(k=>plannedFor(k,addMonths(fy,12))).map(k=>`${potLabel(k)} ${money0(plannedFor(k,addMonths(fy,12)))} of ${money0(annualBudget(k,addMonths(fy,12)))}`).join(", ")}.</div>`:""}`)}</div>
   <div class="section">${openPotCard(fy)}</div>
 `;
@@ -728,6 +741,11 @@ function renderFeed(){
   $("customRange").classList.toggle("hidden",FL.period!=="custom");
   const list=filtered().sort((a,b)=>b.date.localeCompare(a.date)||(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
   const total=list.reduce((s,t)=>s+rowAmount(t).val,0);
+  { // planned spends aren't transactions yet, so say what's earmarked for this budget in this period
+    const[a,b]=periodRange(),end=FL.period==="fy"?addMonths(fyStart(curMK()),11)+"-31":b;
+    const pl=FL.pot?PLANNED.filter(x=>x.status==="planned"&&x.pot===FL.pot&&x.date>=a&&x.date<=end):[];
+    $("feedPlanned").innerHTML=pl.length?`<div class="note small">Plus ${money(pl.reduce((s,x)=>s+Number(x.amount),0))} planned, not yet paid: ${pl.sort((x,y)=>x.date.localeCompare(y.date)).map(x=>`${esc(x.description)} ${money0(x.amount)} (${dateShort(x.date)})`).join(", ")}.</div>`:"";
+  }
   $("feedCount").textContent=`${list.length} transaction${list.length===1?"":"s"}`;$("feedTotal").textContent=list.length?`Net ${money(total,true)}`:"";
   if(!list.length){$("feed").innerHTML=`<div class="empty">No transactions match these filters.</div>`;return;}
   const t0=todayISO(),y0=addDays(t0,-1),days={};list.forEach(t=>(days[t.date]=days[t.date]||[]).push(t));
@@ -826,9 +844,9 @@ function yearView(Y){
   const months=[];for(let m=Y;m<=addMonths(Y,11);m=addMonths(m,1))months.push(m);
   const cur=curMK(),past=m=>m<=cur;
   const yTx=TX.filter(t=>fyStart(t.monthKey)===Y);
-  const ann=["exceptionals","holidays"].map(k=>{const b=annualBudget(k,Y),sp=potSpend(yTx,k),pl=plannedFor(k,Y);return potCard(potLabel(k),sp,b,k==="exceptionals"&&bonusesFor(Y)?`incl. ${money0(bonusesFor(Y))} bonus`:"",pl);}).join("");
+  const ann=["exceptionals","holidays"].map(k=>{const b=annualBudget(k,Y),sp=potSpend(yTx,k),pl=plannedFor(k,Y);return potCard(potLabel(k),sp,b,k==="exceptionals"&&bonusesFor(Y)?`incl. ${money0(bonusesFor(Y))} bonus`:"",pl,fyDrill(k,Y));}).join("");
   const mon=["dayToDay","riyaan"].map(k=>{const amts=months.map(m=>monthBudget(k,m)),tot=amts.reduce((s,v)=>s+v,0),sp=months.filter(past).reduce((s,m)=>s+potSpend(TX.filter(t=>t.monthKey===m),k),0),uniq=[...new Set(amts)];
-    return`<div class="li"><div><div class="t">${potLabel(k)}</div><div class="d">${uniq.length===1?money0(uniq[0])+" a month":uniq.map(v=>money0(v)).join(" then ")+" a month"}${months.some(past)?` · ${money0(sp)} spent so far`:""}</div></div><div class="r num" style="font-weight:600;">${money0(tot)} for the year</div></div>`;}).join("");
+    return`<div class="li"${drillAttr(fyDrill(k,Y))}><div><div class="t">${potLabel(k)}${drillHint(1)}</div><div class="d">${uniq.length===1?money0(uniq[0])+" a month":uniq.map(v=>money0(v)).join(" then ")+" a month"}${months.some(past)?` · ${money0(sp)} spent so far`:""}</div></div><div class="r num" style="font-weight:600;">${money0(tot)} for the year</div></div>`;}).join("");
   return`<div class="section"><div class="eyebrow">Annual budgets · ${fyLabel(Y)}</div><div class="grid-2">${ann}</div></div>
     <div class="section"><div class="eyebrow">Monthly budgets · ${fyLabel(Y)}</div><div class="card">${mon}</div></div>`;
 }
@@ -861,7 +879,8 @@ let payOpen=null;
 function paySheet(x){return`<form class="sheet form-grid" data-payform="${x.src}:${x.id}" data-noclose>
   <label class="f">Paid on<input type="date" name="date" value="${todayISO()}" required></label>
   <label class="f">Amount (£)<input type="number" step="0.01" min="0" name="amount" value="${x.amount}" required></label>
-  <label class="f full">From account<select name="account">${opts(BANK)}</select></label>
+  <label class="f${x.src==="pp"?"":" full"}">From account<select name="account">${opts(BANK)}</select></label>
+  ${x.src==="pp"?(()=>{const c=(PLANNED.find(p=>p.id===x.id)||{}).category;return`<label class="f">Category<select name="category">${CATEGORIES.map(k=>`<option${k===(CATEGORIES.includes(c)?c:"Other")?" selected":""}>${esc(k)}</option>`).join("")}</select></label>`;})():""}
   <div class="full note small">This logs it as a transaction and takes it off month-end's tick list, so it is only counted once.</div>
   <div class="full actions-row" style="margin-top:0;"><button type="button" class="btn ghost sm" data-paycancel>Cancel</button><button class="btn sm">Mark paid and log it</button></div></form>`;}
 document.addEventListener("click",e=>{const b=e.target.closest("[data-pay]");if(b){e.stopPropagation();payOpen=b.dataset.pay;render(true);setTimeout(()=>{const f=document.querySelector(`[data-payform="${payOpen}"]`);if(f){const[src,id]=payOpen.split(":");const it=src==="plan"?PLAN.find(p=>p.id===id):PLANNED.find(p=>p.id===id);if(it)f.account.value=it.account;f.scrollIntoView({block:"center",behavior:"smooth"});}},0);return;}
@@ -871,7 +890,7 @@ document.addEventListener("submit",async e=>{const f=e.target.closest("[data-pay
   const lk=lockedMsg(date);if(lk)return setStatus(lk,true);
   const base={date,monthKey:mkOf(date),value,account,createdAt:ts,updatedAt:ts,oneoffRef:`${src==="plan"?"plan_items":"planned_payments"}/${id}`};
   let tx;
-  if(src==="pp"){const x=PLANNED.find(p=>p.id===id);tx={...base,type:"spend",direction:x.direction||"out",pot:x.pot||"none",category:"Other",paidBy:ownerOf(account),retailer:x.description,toAccount:null,bonus:false};}
+  if(src==="pp"){const x=PLANNED.find(p=>p.id===id);tx={...base,type:"spend",direction:x.direction||"out",pot:x.pot||"none",category:(f.category&&f.category.value)||x.category||"Other",paidBy:ownerOf(account),retailer:x.description,toAccount:null,bonus:false};}
   else{const p=PLAN.find(x=>x.id===id);
     tx=p.kind==="transfer"?{...base,type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:ownerOf(account),retailer:p.name,toAccount:p.to,bonus:false}
       :p.kind==="in"?{...base,type:"income",direction:"in",pot:"income",category:"Income",paidBy:ownerOf(account),retailer:p.name,toAccount:null,bonus:false}
@@ -883,9 +902,9 @@ document.addEventListener("submit",async e=>{const f=e.target.closest("[data-pay
 function renderPlanOneoff(){
   const mk=curMK();
   const fromPlan=PLAN.filter(p=>p.freq==="oneoff"&&p.status!=="paid"&&(p.start>=mk||!p.end)).map(p=>({src:"plan",id:p.id,date:occDate(p,p.start),name:p.name,account:p.account,to:p.kind==="transfer"?p.to:"",amount:Number(p.amount),dir:p.kind==="in"?"in":"out",off:p.end&&p.end<p.start,est:p.basis==="estimate",note:p.note}));
-  const fromPP=PLANNED.filter(p=>p.status==="planned").map(p=>({src:"pp",id:p.id,date:p.date,name:p.description,account:p.account,to:"",amount:Number(p.amount),dir:p.direction,pot:p.pot}));
+  const fromPP=PLANNED.filter(p=>p.status==="planned").map(p=>({src:"pp",id:p.id,date:p.date,name:p.description,account:p.account,to:"",amount:Number(p.amount),dir:p.direction,pot:p.pot,cat:p.category}));
   const l=fromPlan.concat(fromPP).sort((a,b)=>a.date.localeCompare(b.date));
-  const row=x=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(x.name)}</div><div class="d">${dateLong(x.date)} · ${esc(x.account)}${x.to?" → "+esc(accLabel(x.to)):""}${x.pot?" · from the "+esc(potLabel(x.pot))+" budget":""}</div>
+  const row=x=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(x.name)}</div><div class="d">${dateLong(x.date)} · ${esc(x.account)}${x.to?" → "+esc(accLabel(x.to)):""}${x.pot?" · from the "+esc(potLabel(x.pot))+" budget"+(x.cat?" · "+esc(x.cat):""):""}</div>
     <div class="row-btns">${x.off?`<button class="btn sm" data-restore1="${x.id}">Restore</button>`:`<button class="btn sm" data-pay="${x.src}:${x.id}">Paid</button>${x.src==="pp"?`<button class="btn warn sm" data-pp="cancelled" data-id="${x.id}">Cancel</button>`:`<button class="btn warn sm" data-del1="${x.id}">Delete</button>`}`}</div>${payOpen===x.src+":"+x.id?paySheet(x):""}</div>
     <div class="r"><div class="num" style="font-weight:600;${x.dir==="in"?"color:var(--teal-dark)":""}">${x.dir==="in"?"+":"-"}${money(x.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${x.to?`<span class="chip grey">Transfer</span>`:x.pot?`<span class="chip">${esc(potLabel(x.pot))}</span>`:`<span class="chip grey">Payment</span>`}${x.est?`<span class="chip grey">Estimate</span>`:""}${x.off?`<span class="chip warn">Switched off</span>`:""}</div></div></div>`;
   $("planBody").innerHTML=`<div class="note" style="margin-bottom:14px;">Every future one-off in one list: payments, transfers (to an ISA, the mortgage, a pension or between you) and budget spends you know are coming. One-offs from a regular account also show under that account in Regular. All of them feed the forecast.</div>
@@ -897,13 +916,14 @@ function renderPlanOneoff(){
    <label class="f">Amount (£)<input type="number" step="0.01" min="0" id="ppAmount" required></label>
    <label class="f">From / into account<select id="ppAccount">${opts(BANK)}</select></label>
    <label class="f" id="ppPotL">Budget<select id="ppPot">${opts(POTS)}</select></label>
+   <label class="f" id="ppCatL">Category<select id="ppCat">${opts(CATEGORIES)}</select></label>
    <label class="f hidden" id="ppToL">To<select id="ppTo">${opts(BANK.concat(DESTS).map(k=>({key:k,label:accLabel(k)})))}</select></label>
    <div class="full actions-row" style="margin-top:0;"><button class="btn" type="submit">Add</button></div></form>
    <div class="note small" style="margin-top:8px;">A spend from a budget comes out of that budget, so the forecast doesn't count it twice. Payments, transfers and money in are ticked at month-end like regular payments.</div></div>`;
-  const sync=()=>{const k=$("ppKind").value,cur=$("ppAccount").value;$("ppPotL").classList.toggle("hidden",k!=="budget");$("ppToL").classList.toggle("hidden",k!=="transfer");
+  const sync=()=>{const k=$("ppKind").value,cur=$("ppAccount").value;$("ppPotL").classList.toggle("hidden",k!=="budget");$("ppCatL").classList.toggle("hidden",k!=="budget");$("ppToL").classList.toggle("hidden",k!=="transfer");
     $("ppAccount").innerHTML=opts(k==="transfer"?BANK.concat(ISAS):BANK);$("ppAccount").value=[...$("ppAccount").options].some(o=>o.value===cur)?cur:BANK[0];};$("ppKind").onchange=sync;sync();
   $("ppForm").onsubmit=async e=>{e.preventDefault();const k=$("ppKind").value,date=$("ppDate").value,amount=parseFloat($("ppAmount").value)||0,account=$("ppAccount").value,name=$("ppDesc").value.trim();
-    try{if(k==="budget")await addDoc(collection(db,"planned_payments"),{description:name,date,amount,direction:"out",account,pot:$("ppPot").value,status:"planned",createdAt:serverTimestamp()});
+    try{if(k==="budget")await addDoc(collection(db,"planned_payments"),{description:name,date,amount,direction:"out",account,pot:$("ppPot").value,category:$("ppCat").value,status:"planned",createdAt:serverTimestamp()});
       else{const to=$("ppTo").value;if(k==="transfer"&&to===account)return setStatus("From and to must differ",true);const ref=doc(collection(db,"plan_items"));await setDoc(ref,{name,account,kind:k,to:k==="transfer"?to:"",amount,day:+date.slice(8),basis:"fixed",freq:"oneoff",months:[],start:mkOf(date),end:"",status:"confirmed",manual:true,note:"",series:ref.id,createdAt:serverTimestamp()});}
       setStatus("One-off added");renderPlan();}catch(err){fail(err);}};
 }
