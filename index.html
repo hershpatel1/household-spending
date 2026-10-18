@@ -913,32 +913,40 @@ function p3mShare(pot){ // previous three complete months: share of the budget's
 function forecast(fromOpening){
   const st=startState(fromOpening), today=todayISO(), rows=[];
   let{joint,hersh,sonali,mort}=st;const isas={...st.isas},pens={...st.pens};
-  const unitAdd=(acc,v)=>{const u=unitOf(acc);if(u==="joint")joint+=v;else if(u==="hersh")hersh+=v;else if(u==="sonali")sonali+=v;};
-  const dest=(to,v,from)=>{if(ISAS.includes(to))isas[to]+=v;else if(to==="Pension")pens["Hersh Vanguard personal"]+=v/0.8;else if(to==="Mortgage")mort-=v;else unitAdd(to,v);};
+  let F=[];const unitAdd=(acc,v,name)=>{const u=unitOf(acc);if(u==="joint")joint+=v;else if(u==="hersh")hersh+=v;else if(u==="sonali")sonali+=v;if(u&&v)F.push({name:name||"Other",u,v});};
+  const dest=(to,v,from,name)=>{if(ISAS.includes(to))isas[to]+=v;else if(to==="Pension")pens["Hersh Vanguard personal"]+=v/0.8;else if(to==="Mortgage")mort-=v;else unitAdd(to,v,name);};
   const shares={};POTS.forEach(p=>shares[p.key]=p3mShare(p.key));
   const fySpent={};let prevEnd=st.date;
+  // regular payments count in the month they are due, not the day a weekend pushes them to, so each month is a clean net position
+  const occByMonth={};occurrences(st.date,lastDay(addMonths(S.horizon,1))).forEach(o=>{const m=o.mk<mkOf(st.date)?mkOf(st.date):o.mk;if(m<=S.horizon)(occByMonth[m]=occByMonth[m]||[]).push(o);});
   if(!fromOpening){const lc=lastClose();if(lc)Object.entries(lc.items||{}).forEach(([k,it])=>{if(!it||it.status!=="notyet")return;const p=PLAN.find(x=>x.id===k.split("@")[0]);if(!p)return;const v=Number(p.amount);
     if(p.kind==="in")unitAdd(p.account,v);else{unitAdd(p.account,-v);if(p.kind==="transfer")dest(p.to,v,p.account);}if(p.role==="mortgage")mort-=v;});}
   for(let mk=mkOf(st.date);mk<=S.horizon;mk=addMonths(mk,1)){
-    const end=lastDay(mk), first=mk===mkOf(st.date);
+    const end=lastDay(mk), first=mk===mkOf(st.date);if(!first)F=[];
     // regular payments and income
-    occurrences(prevEnd,end).forEach(o=>{const p=o.p;let v=Number(p.amount);
-      if(ISAS.includes(p.account)){v=Math.min(v,isas[p.account]);isas[p.account]-=v;dest(p.to,v,p.account);return;}
-      if(p.kind==="in")unitAdd(p.account,v);else{unitAdd(p.account,-v);if(p.kind==="transfer")dest(p.to,v,p.account);}
+    (occByMonth[mk]||[]).forEach(o=>{const p=o.p;let v=Number(p.amount);
+      if(ISAS.includes(p.account)){v=Math.min(v,isas[p.account]);isas[p.account]-=v;dest(p.to,v,p.account,p.name);return;}
+      if(p.kind==="in")unitAdd(p.account,v,p.name);else{unitAdd(p.account,-v,p.name);if(p.kind==="transfer")dest(p.to,v,p.account,p.name);}
       if(p.role==="mortgage")mort-=v;});
     // what has actually happened since the start point (live forecast only)
     // the saved plan includes the movements already known at opening (the seeded 17 Oct entries); the live forecast includes everything logged
     TX.filter(t=>(!fromOpening||String(t.id).startsWith("seed-tx-"))&&!t.preOpening&&t.date>prevEnd&&t.date<=end&&t.date<=today).forEach(t=>{
-      if(t.type==="transfer"){if(ISAS.includes(t.account))isas[t.account]-=t.value;else unitAdd(t.account,-t.value);dest(t.toAccount,t.value,t.account);}
-      else unitAdd(t.account,t.direction==="in"?t.value:-t.value);});
+      if(t.type==="transfer"){if(ISAS.includes(t.account))isas[t.account]-=t.value;else unitAdd(t.account,-t.value,"Logged: "+(t.retailer||"transfer"));dest(t.toAccount,t.value,t.account,"Logged: "+(t.retailer||"transfer"));}
+      else unitAdd(t.account,t.direction==="in"?t.value:-t.value,t.type==="spend"?"Logged spending":"Logged: "+(t.retailer||t.type));});
     // planned one-offs
-    PLANNED.filter(x=>x.status==="planned"&&!x.pot&&x.date>prevEnd&&x.date<=end).forEach(x=>unitAdd(x.account,x.direction==="in"?x.amount:-x.amount));
+    PLANNED.filter(x=>x.status==="planned"&&!x.pot&&x.date>prevEnd&&x.date<=end).forEach(x=>unitAdd(x.account,x.direction==="in"?x.amount:-x.amount,x.description));
+    // planned spends from a budget come out in their month and count towards that budget, so an overspend (India) is not hidden
+    const ppB=PLANNED.filter(x=>x.status==="planned"&&x.pot&&x.date>prevEnd&&x.date<=end);
+    ppB.forEach(x=>unitAdd(x.account,-x.amount,x.description));
+    const ppIn=k=>ppB.filter(x=>x.pot===k).reduce((s,x)=>s+x.amount,0);
     // budgets still to be spent (monthly pots: what's left this month; annual pots: what's left in the year, spread evenly)
     const fy=fyStart(mk), spentTo=fromOpening?st.date:today;
-    ["dayToDay","riyaan"].forEach(k=>{const spent=TX.filter(t=>t.monthKey===mk&&t.date<=spentTo).reduce((s,t)=>s+(t.type==="spend"&&t.pot===k?(t.direction==="out"?t.value:-t.value):0),0);
-      const left=Math.max(0,monthBudget(k,mk)-(mk<=mkOf(spentTo)?spent:0));hersh-=left*shares[k].hersh;sonali-=left*shares[k].sonali;});
+    const bud=v=>{if(v){F.push({name:"Budgets (Day-to-day, Riyaan, Holidays, Exceptionals)",u:"hersh",v:-v.h});F.push({name:"Budgets (Day-to-day, Riyaan, Holidays, Exceptionals)",u:"sonali",v:-v.s});}};
+    ["dayToDay","riyaan"].forEach(k=>{const spent=ppIn(k)+TX.filter(t=>t.monthKey===mk&&t.date<=spentTo).reduce((s,t)=>s+(t.type==="spend"&&t.pot===k?(t.direction==="out"?t.value:-t.value):0),0);
+      const left=Math.max(0,monthBudget(k,mk)-(mk<=mkOf(spentTo)||ppIn(k)?spent:0));hersh-=left*shares[k].hersh;sonali-=left*shares[k].sonali;bud({h:left*shares[k].hersh,s:left*shares[k].sonali});});
     ["exceptionals","holidays"].forEach(k=>{const key=k+fy;if(fySpent[key]==null)fySpent[key]=TX.filter(t=>fyStart(t.monthKey)===fy&&t.date<=spentTo).reduce((s,t)=>s+(t.type==="spend"&&t.pot===k?(t.direction==="out"?t.value:-t.value):0),0);
-      const monthsLeft=(+fy.slice(0,4)+1)*12+3-(+mk.slice(0,4)*12+ +mk.slice(5))+1,left=Math.max(0,annualBudget(k,fy)-fySpent[key]),use=left/monthsLeft;fySpent[key]+=use;hersh-=use*shares[k].hersh;sonali-=use*shares[k].sonali;});
+      fySpent[key]+=ppIn(k);
+      const monthsLeft=(+fy.slice(0,4)+1)*12+3-(+mk.slice(0,4)*12+ +mk.slice(5))+1,left=Math.max(0,annualBudget(k,fy)-fySpent[key]),use=left/monthsLeft;fySpent[key]+=use;hersh-=use*shares[k].hersh;sonali-=use*shares[k].sonali;bud({h:use*shares[k].hersh,s:use*shares[k].sonali});});
     // workplace pensions (gross, paid by employer and salary sacrifice)
     S.workplace.forEach(w=>{if(mk>=w.from&&!(first&&mkOf(st.date)===mk&&+st.date.slice(8)>27))pens[w.pot]+=w.salary/12*(w.er+(mk>=w.eeFrom?w.ee:0));});
     // growth and interest
@@ -946,7 +954,9 @@ function forecast(fromOpening){
     PENSIONS.forEach(k=>pens[k]*=1+monthlyRate(S.rates.pension)*(first?Math.max(0,daysBetween(st.date,end))/30.4:1));
     mort+=mort*S.mortgageRate/12*(first?Math.max(0,daysBetween(st.date,end))/30.4:1);
     const isaTot=ISAS.reduce((s,k)=>s+isas[k],0),penTot=PENSIONS.reduce((s,k)=>s+pens[k],0),cash=joint+hersh+sonali;
-    rows.push({mk,joint:r2(joint),hersh:r2(hersh),sonali:r2(sonali),float:r2(hersh+sonali),isas:Object.fromEntries(ISAS.map(k=>[k,r2(isas[k])])),isaTot:r2(isaTot),pens:Object.fromEntries(PENSIONS.map(k=>[k,r2(pens[k])])),penTot:r2(penTot),mort:r2(mort),nw:r2(cash+isaTot-mort)});
+    const fm={};F.forEach(x=>{const k=x.name+"|"+x.u;fm[k]=(fm[k]||0)+x.v;});
+    const flows=Object.entries(fm).map(([k,v])=>{const[name,u]=k.split("|");return{name,u,v:r2(v)};}).filter(x=>Math.abs(x.v)>=0.5);
+    rows.push({flows,mk,joint:r2(joint),hersh:r2(hersh),sonali:r2(sonali),float:r2(hersh+sonali),isas:Object.fromEntries(ISAS.map(k=>[k,r2(isas[k])])),isaTot:r2(isaTot),pens:Object.fromEntries(PENSIONS.map(k=>[k,r2(pens[k])])),penTot:r2(penTot),mort:r2(mort),nw:r2(cash+isaTot-mort)});
     prevEnd=end;
   }
   return{rows,shares,start:st};
@@ -1011,9 +1021,30 @@ function lineChart(series,labels,opts={}){
    ${ticks.map(t=>`<line x1="${P.l}" x2="${W-P.r}" y1="${y(t)}" y2="${y(t)}" stroke="#e6e8ec"/><text x="${P.l-4}" y="${y(t)+3}" font-size="9" text-anchor="end" fill="#6B7280">${k(t)}</text>`).join("")}
    ${opts.floor!=null?`<line x1="${P.l}" x2="${W-P.r}" y1="${y(opts.floor)}" y2="${y(opts.floor)}" stroke="#F2B705" stroke-width="1.5" stroke-dasharray="4 3"/>`:""}
    ${series.map(s=>`<polyline fill="none" stroke="${s.color}" stroke-width="${s.w||2}" ${s.dash?`stroke-dasharray="${s.dash}"`:""} points="${path(s.vals)}"/>`).join("")}
-   ${xl}</svg><div class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px;">${series.map(s=>`<span><span style="display:inline-block;width:14px;height:2px;background:${s.color};vertical-align:middle;${s.dash?"opacity:.6":""}"></span> ${s.name}</span>`).join("")}${opts.floor!=null?`<span><span style="display:inline-block;width:14px;height:2px;background:#F2B705;vertical-align:middle;"></span> £10k floor</span>`:""}</div>`;
+   ${xl}
+   ${opts.id?`<line class="cmark" data-cm="${opts.id}" x1="0" x2="0" y1="${P.t}" y2="${H-P.b}" stroke="#F2B705" stroke-width="1.5" visibility="hidden"/>`+labels.map((l,i)=>`<rect data-ct="${opts.id}" data-i="${i}" data-x="${x(i).toFixed(1)}" x="${(x(i)-(W-P.l-P.r)/Math.max(1,labels.length-1)/2).toFixed(1)}" y="0" width="${((W-P.l-P.r)/Math.max(1,labels.length-1)).toFixed(1)}" height="${H}" fill="transparent" style="cursor:pointer;"/>`).join(""):""}
+   </svg>${opts.id?`<div class="note small" style="margin-top:4px;">Tap any month to see what moves it. Each regular payment counts in its own month, even when a weekend moves it a day or two.</div><div id="cd-${opts.id}"></div>`:""}<div class="small muted" style="display:flex;gap:12px;flex-wrap:wrap;margin-top:4px;">${series.map(s=>`<span><span style="display:inline-block;width:14px;height:2px;background:${s.color};vertical-align:middle;${s.dash?"opacity:.6":""}"></span> ${s.name}</span>`).join("")}${opts.floor!=null?`<span><span style="display:inline-block;width:14px;height:2px;background:#F2B705;vertical-align:middle;"></span> £10k floor</span>`:""}</div>`;
 }
 window.liveForecastForTest=()=>liveForecast().rows;
+// what a tapped month is made of
+function chartDetail(id,i){
+  const rows=liveForecast().rows,r=rows[i],prev=rows[i-1],B=BASELINE&&BASELINE.rows?BASELINE.rows:{},b=B[r.mk];if(!r)return"";
+  const line=(l,v,cls="")=>`<span${cls?` class="${cls}"`:""}>${l}</span><span class="num${cls?" "+cls:""}">${v}</span>`;
+  if(id==="float"){
+    const by={};(r.flows||[]).filter(f=>f.u!=="joint").forEach(f=>by[f.name]=(by[f.name]||0)+f.v);
+    const jt={};(r.flows||[]).filter(f=>f.u==="joint").forEach(f=>jt[f.name]=(jt[f.name]||0)+f.v);
+    const list=o=>Object.entries(o).filter(([,v])=>Math.abs(v)>=0.5).sort((a,b)=>Math.abs(b[1])-Math.abs(a[1]));
+    const fl=list(by),jl=list(jt);
+    return`<div class="sheet"><div class="t" style="font-weight:600;">${monthLabel(r.mk)}</div>
+     <div class="calc">${line("Float at month end",money(r.float),"tot")}${b?line("Plan",money(b.float)):""}${prev?line("Change in the month",money(r.float-prev.float,true)):""}</div>
+     <div class="eyebrow" style="margin-top:8px;">What moves the float</div><div class="calc">${fl.slice(0,10).map(([n,v])=>line(esc(n),money(v,true))).join("")||line("Nothing","£0.00")}${fl.length>10?line(`${fl.length-10} smaller items`,money(fl.slice(10).reduce((s,x)=>s+x[1],0),true)):""}</div>
+     ${jl.length?`<div class="eyebrow" style="margin-top:8px;">Joint (${money(r.joint)})</div><div class="calc">${jl.slice(0,8).map(([n,v])=>line(esc(n),money(v,true))).join("")}</div>`:""}
+     <div class="note small" style="margin-top:6px;">Regular payments count in the month they are due, even if a weekend moves the actual day. Month-end still uses the real dates.</div></div>`;}
+  return`<div class="sheet"><div class="t" style="font-weight:600;">${monthLabel(r.mk)}</div><div class="calc">${line("Net liquid position",money(r.nw),"tot")}${b?line("Plan",money(b.nw)):""}${line("Cash (float and Joint)",money(r.float+r.joint))}${line("ISAs",money(r.isaTot))}${line("Mortgage",money(-r.mort,true))}${line("Pensions (not included)",money(r.penTot))}</div></div>`;
+}
+document.addEventListener("click",e=>{const t=e.target.closest("[data-ct]");if(!t)return;const id=t.dataset.ct,i=+t.dataset.i;
+  const m=document.querySelector(`[data-cm="${id}"]`);if(m){m.setAttribute("x1",t.dataset.x);m.setAttribute("x2",t.dataset.x);m.setAttribute("visibility","visible");}
+  const d=$("cd-"+id);if(d)d.innerHTML=chartDetail(id,i);});
 function renderPlanForecast(){
   const f=liveForecast(),rows=f.rows,B=BASELINE&&BASELINE.rows?BASELINE.rows:null,end=rows[rows.length-1],be=B?.[S.horizon];
   const lab=rows.map(r=>{const[y,m]=r.mk.split("-");return`${mon(+m)} ${y.slice(2)}`;});
@@ -1039,8 +1070,8 @@ function renderPlanForecast(){
       <div class="actions-row"><button class="btn ghost sm" id="resavePlan">Re-save the plan from today's Plan</button></div><div class="note small">Only when you deliberately re-plan, for example at the April review. The old version is kept.</div>
       ${gaps.length?`<div class="eyebrow" style="margin-top:12px;">Where the float moves away from the plan</div><div class="calc">${gaps.slice(0,12).map(x=>`<span>${monthLabel(x.mk)}</span><span class="num">${money(x.step,true)} (gap ${money(x.g,true)})</span>`).join("")}</div>`:""}`);})()}
   ${recs.length?fold("fc-recs","Recommended moves",`${recs.length} from the forecast`,`<span class="chip warn">${recs.length}</span>`,true,recs.map((r,i)=>`<div class="li"><div style="min-width:0;"><div class="t">${esc(r.text)}</div><div class="d">${esc(r.why)}</div><div class="row-btns"><button class="btn sm" data-rec="${i}">Add to Plan for ${shortMonth(r.mk)}</button></div></div></div>`).join("")):""}
-  ${fold("fc-float","Float",`Lowest ${money0(low.float)} in ${shortMonth(low.mk)}`,low.float<S.floor?`<span class="chip warn">Below floor</span>`:`<span class="chip ok">Above floor</span>`,true,lineChart([{name:"Forecast",vals:rows.map(r=>r.float),color:"#1D3461"},{name:"Plan",vals:pl("float"),color:"#6B7280",dash:"5 4",w:1.5},{name:"Joint",vals:rows.map(r=>r.joint),color:"#8FA3C8",w:1.5}],lab,{floor:S.floor,label:"Float forecast"}))}
-  ${fold("fc-nw","Net liquid position, mortgage and pensions",`Mortgage ${money0(end.mort)} left in Jul 2030`,"",false,lineChart([{name:"Net liquid position",vals:rows.map(r=>r.nw),color:"#1D3461"},{name:"Plan",vals:pl("nw"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Net liquid position"})+lineChart([{name:"Mortgage",vals:rows.map(r=>r.mort),color:"#7A5300"},{name:"Plan",vals:pl("mort"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Mortgage"})+lineChart([{name:"Pensions (tracked, not in net liquid position)",vals:rows.map(r=>r.penTot),color:"#2B4C80"},{name:"Plan",vals:pl("penTot"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Pensions"}))}
+  ${fold("fc-float","Float",`Lowest ${money0(low.float)} in ${shortMonth(low.mk)}`,low.float<S.floor?`<span class="chip warn">Below floor</span>`:`<span class="chip ok">Above floor</span>`,true,lineChart([{name:"Forecast",vals:rows.map(r=>r.float),color:"#1D3461"},{name:"Plan",vals:pl("float"),color:"#6B7280",dash:"5 4",w:1.5},{name:"Joint",vals:rows.map(r=>r.joint),color:"#8FA3C8",w:1.5}],lab,{floor:S.floor,label:"Float forecast",id:"float"}))}
+  ${fold("fc-nw","Net liquid position, mortgage and pensions",`Mortgage ${money0(end.mort)} left in Jul 2030`,"",false,lineChart([{name:"Net liquid position",vals:rows.map(r=>r.nw),color:"#1D3461"},{name:"Plan",vals:pl("nw"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Net liquid position",id:"nlp"})+lineChart([{name:"Mortgage",vals:rows.map(r=>r.mort),color:"#7A5300"},{name:"Plan",vals:pl("mort"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Mortgage"})+lineChart([{name:"Pensions (tracked, not in net liquid position)",vals:rows.map(r=>r.penTot),color:"#2B4C80"},{name:"Plan",vals:pl("penTot"),color:"#6B7280",dash:"5 4",w:1.5}],lab,{label:"Pensions"}))}
   ${fold("fc-pots","Every pot, each April and July","Snapshots from the forecast","",false,(()=>{const pick=rows.filter(r=>/-(04|07)$/.test(r.mk)||r===rows[0]);const cols=[["Float","float"],["Joint","joint"],...ISAS.map(k=>[k,"isa:"+k]),["Pensions","penTot"],["Mortgage","mort"],["Net liquid position","nw"]];
      return pick.map(r=>fold(`fc-snap-${r.mk}`,monthLabel(r.mk),`Net liquid position ${money0(r.nw)}`,"",false,`<div class="calc">${cols.map(([l,k])=>`<span>${l}</span><span class="num">${money0(k.startsWith("isa:")?r.isas[k.slice(4)]:r[k])}</span>`).join("")}</div>`,true)).join("");})())}
   ${fold("fc-ass","Assumptions","Growth rates, spending split, pensions","",false,`<div class="calc">
