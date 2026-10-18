@@ -457,7 +457,7 @@ function listen(){
   col("transactions",l=>TX=l.map(norm));
   col("budgets",l=>{BUDGETS={};l.forEach(d=>BUDGETS[d.id]=d);});
   col("annualBudgets",l=>{ANNUAL={};l.forEach(d=>ANNUAL[d.id]=d);});
-  col("plan_items",l=>PLAN=l);
+  col("plan_items",l=>{PLAN=l;setTimeout(healPlan,0);});
   col("actions",l=>ACTIONS=l);
   col("planned_payments",l=>PLANNED=l);
   col("budget_rules",l=>{RULES=l;});
@@ -757,7 +757,8 @@ let planSeg="pay",planOpen=null,planMode=null,adding=false;
 $$("#planSeg button").forEach(b=>b.addEventListener("click",()=>{planSeg=b.dataset.ps;$$("#planSeg button").forEach(x=>x.classList.toggle("on",x===b));planOpen=null;adding=false;renderPlan();}));
 function renderPlan(){({pay:renderPlanPay,budgets:renderPlanBudgets,oneoff:renderPlanOneoff,forecast:renderPlanForecast})[planSeg]();}
 function itemForm(p,mode){
-  const v=k=>esc(p?.[k]??"");const mkDef=mode==="add"?curMK():addMonths(curMK(),1);
+  const mkDef=mode==="add"?curMK():addMonths(curMK(),1);if(p&&mode==="change"){const n=versionAt(p,mkDef);if(n)p=n;}
+  const v=k=>esc(p?.[k]??"");
   const showWhen=mode!=="add";
   return`<form class="sheet form-grid" data-pform="${mode}" data-id="${p?.id||""}">
    ${mode==="end"?`<label class="f full">Last month it is paid<input type="month" name="last" value="${curMK()}" required></label>`:`
@@ -768,6 +769,7 @@ function itemForm(p,mode){
    <label class="f">Basis<select name="basis"><option value="fixed"${p?.basis==="fixed"?" selected":""}>Fixed (tick or override)</option><option value="estimate"${p?.basis==="estimate"?" selected":""}>Estimate (ask for actual)</option></select></label>
    ${mode==="add"?`<label class="f">How often<select name="freq"><option value="monthly">Monthly</option><option value="annual">Yearly</option><option value="sixmonthly">Twice yearly</option><option value="oneoff">One-off</option></select></label><label class="f">Months (yearly / twice yearly)<input name="months" placeholder="e.g. 4,10"></label><label class="f">End month (optional)<input type="month" name="end"></label>`:""}
    <label class="f">${showWhen?"From month":"Start month"}<input type="month" name="from" value="${mkDef}" required></label>
+   ${mode==="change"?`<label class="f full" style="flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-weight:400;"><input type="checkbox" name="fix" style="width:auto;min-height:0;"> It was always like this (fix a mistake in every month, not a change from a month)</label>`:""}
    <label class="f full">Note<input name="note" value="${v("note")}"></label>`}
    <div class="full actions-row" style="margin-top:0;"><button type="button" class="btn ghost sm" data-pcancel>Cancel</button><button class="btn sm" type="submit">${mode==="end"?"End it":mode==="replace"?"Replace":mode==="change"?"Save change":"Add"}</button></div>
   </form>`;
@@ -776,10 +778,10 @@ function planRow(p,mk){
   const hist=seriesOf(p).filter(x=>x.id!==p.id);
   const open=planOpen===p.id;
   return`<div class="li" data-plan="${p.id}" style="cursor:pointer;display:block;">
-   <div style="display:flex;justify-content:space-between;gap:12px;"><div style="min-width:0;"><div class="t">${esc(p.name)}</div><div class="d">${p.kind==="transfer"?"To "+esc(accLabel(p.to))+" · ":""}${schedText(p)}</div></div>
+   <div style="display:flex;justify-content:space-between;gap:12px;"><div style="min-width:0;"><div class="t">${esc(p.name)}</div><div class="d">${p.kind==="transfer"?"To "+esc(accLabel(p.to))+" · ":""}${schedText(p)}</div>${(()=>{const n=p.freq!=="oneoff"&&(!p.start||p.start<=mk)?nextVersion(p,mk):null;return n?`<div class="d" style="color:var(--teal-dark);font-weight:600;">Changes from ${shortMonth(n.start)}: ${money(n.amount)}${n.day==="lwd"?", last working day":n.day?" on the "+ordinal(+n.day):""}${n.name!==p.name?" ("+esc(n.name)+")":""}</div>`:"";})()}</div>
    <div class="r"><div class="num" style="font-weight:600;${p.kind==="in"?"color:var(--teal-dark)":""}">${p.kind==="in"?"+":""}${money(p.amount)}</div><div style="margin-top:4px;display:flex;gap:4px;justify-content:flex-end;flex-wrap:wrap;">${p.basis==="estimate"?`<span class="chip grey">Estimate</span>`:""}${p.status==="to confirm"?`<span class="chip warn">To confirm</span>`:""}${p.freq==="oneoff"&&p.end&&p.end<p.start?`<span class="chip warn">Switched off</span>`:""}</div></div></div>
    ${open?`<div style="cursor:default;" data-noclose>${p.note?`<div class="d" style="margin-top:6px;">${esc(p.note)}</div>`:""}${hist.length?`<div class="d" style="margin-top:6px;">History: ${hist.map(h=>`${esc(h.name)} ${money(h.amount)} ${h.start?shortMonth(h.start):""}${h.end?" to "+shortMonth(h.end):""}`).join("; ")}</div>`:""}
-     ${payOpen==="plan:"+p.id?paySheet({src:"plan",id:p.id,name:p.name,amount:Number(p.amount),account:p.account}):""}${planMode?itemForm(p,planMode):`<div class="row-btns"><button class="btn sm" data-pm="change">Change</button><button class="btn ghost sm" data-pm="replace">Replace</button>${p.freq==="oneoff"?(p.end&&p.end<p.start?`<button class="btn sm" data-pm="restore">Restore (it was ended by mistake)</button>`:`<button class="btn sm" data-pay="plan:${p.id}">Paid</button><button class="btn warn sm" data-pm="delete">Delete</button>`):`<button class="btn ghost sm" data-pm="end">End</button>`}${p.status==="to confirm"?`<button class="btn ghost sm" data-pm="confirm">Mark confirmed</button>`:""}</div>`}</div>`:""}
+     ${payOpen==="plan:"+p.id?paySheet({src:"plan",id:p.id,name:p.name,amount:Number(p.amount),account:p.account}):""}${planMode?itemForm(p,planMode):`<div class="row-btns"><button class="btn sm" data-pm="change">Change</button><button class="btn ghost sm" data-pm="replace">Replace</button>${p.freq==="oneoff"?(p.end&&p.end<p.start?`<button class="btn sm" data-pm="restore">Restore (it was ended by mistake)</button>`:`<button class="btn sm" data-pay="plan:${p.id}">Paid</button><button class="btn warn sm" data-pm="delete">Delete</button>`):`<button class="btn ghost sm" data-pm="end">End</button>${nextVersion(p,mk)&&(!p.start||p.start<=mk)?`<button class="btn ghost sm" data-pm="unchange">Undo the ${shortMonth(nextVersion(p,mk).start)} change</button>`:""}`}${p.status==="to confirm"?`<button class="btn ghost sm" data-pm="confirm">Mark confirmed</button>`:""}</div>`}</div>`:""}
   </div>`;
 }
 function endedItems(){ // regular payments that have stopped and were not replaced
@@ -813,18 +815,39 @@ document.addEventListener("click",async e=>{
   const pm=e.target.closest("[data-pm]");
   if(pm){const p=PLAN.find(x=>x.id===planOpen);if(pm.dataset.pm==="delete"){if(!confirm(`Delete the one-off ${p.name}?`))return;try{await deleteDoc(doc(db,"plan_items",p.id));setStatus("Deleted "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
     if(pm.dataset.pm==="restore"){try{await updateDoc(doc(db,"plan_items",p.id),{end:"",updatedAt:serverTimestamp()});setStatus("Restored "+p.name);}catch(err){fail(err);}planOpen=null;renderPlan();return;}
+    if(pm.dataset.pm==="unchange"){const n=nextVersion(p,curMK());if(n&&confirm(`Undo the change from ${shortMonth(n.start)}? ${p.name} carries on at ${money(p.amount)}${p.day?" on the "+(p.day==="lwd"?"last working day":ordinal(+p.day)):""}.`))try{await undoChange(p,n);setStatus("Change undone");}catch(err){fail(err);}planOpen=null;renderPlan();return;}
     if(pm.dataset.pm==="confirm"){try{await updateDoc(doc(db,"plan_items",p.id),{status:"confirmed",updatedAt:serverTimestamp()});}catch(err){fail(err);}return;}planMode=pm.dataset.pm;renderPlan();return;}
   if(e.target.closest("[data-noclose]"))return;
   const r=e.target.closest("[data-plan]");if(r&&view==="plan"){planOpen=planOpen===r.dataset.plan?null:r.dataset.plan;planMode=null;renderPlan();}
 });
+// the version of a regular payment that applies in a given month (later start wins)
+function versionAt(p,mk){return seriesOf(p).filter(x=>(!x.start||x.start<=mk)&&(!x.end||x.end>=mk)).pop()||null;}
+const nextVersion=(p,mk)=>seriesOf(p).find(x=>x.id!==p.id&&x.start&&x.start>mk)||null;
 async function changePlan(p,from,changes,asNew){
-  // effective-dated change: end the old version the month before, start a new one from "from"
-  const series=p.series||p.id;
-  if(!asNew&&(!p.start||from<=p.start)){await updateDoc(doc(db,"plan_items",p.id),{...changes,updatedAt:serverTimestamp()});return;}
-  const b=writeBatch(db);const{ id,createdAt,updatedAt,...rest}=p;
-  b.update(doc(db,"plan_items",p.id),{end:addMonths(from,-1),updatedAt:serverTimestamp()});
-  b.set(doc(collection(db,"plan_items")),{...rest,...changes,series:asNew?(changes.series||series):series,start:from,end:p.end&&p.end>=from?p.end:"",createdAt:serverTimestamp()});
+  // effective-dated change: change the version that applies in "from"; if it started earlier, end it the month before and start a new one
+  const t=versionAt(p,from)||p,series=t.series||t.id;
+  if(!asNew&&(!t.start||from<=t.start)){await updateDoc(doc(db,"plan_items",t.id),{...changes,updatedAt:serverTimestamp()});return;}
+  const b=writeBatch(db);const{ id,createdAt,updatedAt,...rest}=t;
+  b.update(doc(db,"plan_items",t.id),{end:addMonths(from,-1),updatedAt:serverTimestamp()});
+  b.set(doc(collection(db,"plan_items")),{...rest,...changes,series:asNew?(changes.series||series):series,start:from,end:t.end&&t.end>=from?t.end:"",createdAt:serverTimestamp()});
   await b.commit();
+}
+async function undoChange(p,n){ // remove a scheduled change and let the earlier version carry on
+  const b=writeBatch(db);b.delete(doc(db,"plan_items",n.id));b.update(doc(db,"plan_items",p.id),{end:n.end||"",updatedAt:serverTimestamp()});await b.commit();
+}
+// self-heal: two versions of the same payment starting in the same month are duplicates; keep the first, with the latest edit
+let healing=false;
+async function healPlan(){
+  if(healing||!LOADED.has("plan_items"))return;
+  const g={};PLAN.filter(p=>p.freq!=="oneoff").forEach(p=>{const k=(p.series||p.id)+"|"+(p.start||"");(g[k]=g[k]||[]).push(p);});
+  const dups=Object.values(g).filter(l=>l.length>1);if(!dups.length)return;
+  healing=true;
+  try{const b=writeBatch(db);const sec=x=>x.createdAt?.seconds||0,usec=x=>x.updatedAt?.seconds||sec(x);
+    dups.forEach(l=>{l.sort((a,c)=>sec(a)-sec(c));const keep=l[0],last=l.slice().sort((a,c)=>usec(c)-usec(a))[0];
+      b.update(doc(db,"plan_items",keep.id),{name:last.name,amount:last.amount,day:last.day,basis:last.basis,note:last.note||"",updatedAt:serverTimestamp()});
+      l.slice(1).forEach(x=>b.delete(doc(db,"plan_items",x.id)));});
+    await b.commit();logError("healPlan",`removed ${dups.reduce((s,l)=>s+l.length-1,0)} duplicate plan version(s)`);
+  }catch(err){logError("healPlan",err.message);}finally{healing=false;}
 }
 document.addEventListener("submit",async e=>{
   const f=e.target.closest("[data-pform]");if(!f)return;e.preventDefault();
@@ -832,7 +855,9 @@ document.addEventListener("submit",async e=>{
   const day=d.day==="lwd"?"lwd":(parseInt(d.day)||null);
   try{
     if(mode==="end"){await updateDoc(doc(db,"plan_items",p.id),{end:d.last,updatedAt:serverTimestamp()});}
-    else if(mode==="change"){await changePlan(p,d.from,{name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim()});}
+    else if(mode==="change"){const ch={name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim()};
+      if(d.fix){const b=writeBatch(db);seriesOf(p).forEach(x=>{const lk=lockedTo();if(lk&&x.end&&x.end<=mkOf(lk))return;b.update(doc(db,"plan_items",x.id),x.id===p.id?{...ch,updatedAt:serverTimestamp()}:{name:ch.name,day,basis:ch.basis,updatedAt:serverTimestamp()});});await b.commit();}
+      else await changePlan(p,d.from,ch);}
     else if(mode==="replace"){await changePlan(p,d.from,{name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim(),status:"confirmed",replaces:p.name},true);}
     else{const months=(d.months||"").split(/[ ,]+/).map(Number).filter(n=>n>=1&&n<=12);if((d.freq==="annual"||d.freq==="sixmonthly")&&!months.length)return setStatus("Enter the month(s), e.g. 4,10",true);
       const ref=doc(collection(db,"plan_items"));await setDoc(ref,{name:d.name.trim(),account:d.account,kind:d.to&&d.kind!=="in"?"transfer":d.kind,to:d.kind==="in"?"":d.to,amount:parseFloat(d.amount)||0,day,basis:d.basis,freq:d.freq,months,start:d.from,end:d.end||"",status:"confirmed",note:d.note.trim(),series:ref.id,createdAt:serverTimestamp()});}

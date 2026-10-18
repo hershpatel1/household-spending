@@ -184,6 +184,34 @@ await scenario('Budget cards open Transactions with the right filters; one-offs 
   check('paid one-off logs with its category', t && t.category === 'Travel & Parking' && t.pot === 'holidays');
 });
 
+await scenario('Changing a regular payment date: no duplicates, visible, undoable, self-healing', '2026-10-18T10:00:00', async ({ page, go, store }) => {
+  const car = () => Object.values(page._s.plan_items).filter(x => (x.series || '') === 'p-s-car' || x.name === 'Car finance');
+  const openCar = async () => { await go('plan'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.click('[data-plan="p-s-car"]'); await page.waitForTimeout(100); };
+  for (let i = 0; i < 3; i++) {
+    await openCar(); await page.click('[data-plan="p-s-car"] [data-pm=change]'); await page.waitForTimeout(100);
+    await page.fill('[data-pform=change] input[name=day]', '1'); await page.click('[data-pform=change] button[type=submit]'); await page.waitForTimeout(200);
+  }
+  page._s = await store(); let v = car();
+  check('three saves leave exactly two versions', v.length === 2, JSON.stringify(v.map(x => [x.start, x.end, x.day])));
+  const nov = v.find(x => x.start === '2026-11');
+  check('November version keeps the Oct 2028 end and the 1st', nov && nov.end === '2028-10' && nov.day === 1);
+  await openCar(); const row = await page.textContent('[data-plan="p-s-car"]');
+  check('list shows the upcoming change', row.includes('Changes from Nov') && row.includes('on the 1st'));
+  await page.click('[data-plan="p-s-car"] [data-pm=unchange]'); await page.waitForTimeout(200);
+  page._s = await store(); v = car();
+  check('undo removes the change and restores the end date', v.length === 1 && v[0].end === '2028-10' && v[0].day === 15);
+  // fix a mistake in every month
+  await openCar(); await page.click('[data-plan="p-s-car"] [data-pm=change]'); await page.waitForTimeout(100);
+  await page.fill('[data-pform=change] input[name=day]', '23'); await page.check('[data-pform=change] input[name=fix]'); await page.click('[data-pform=change] button[type=submit]'); await page.waitForTimeout(200);
+  page._s = await store(); v = car();
+  check('fix a mistake updates in place', v.length === 1 && v[0].day === 23);
+  // self-heal duplicates already saved
+  await page.evaluate(() => { const s = window.__store.plan_items; const b = s['p-s-car']; s['dupA'] = { ...b, start: '2026-11', end: '2028-10', day: 1, createdAt: { seconds: 100 } }; s['dupB'] = { ...b, start: '2026-11', end: '', day: 1, createdAt: { seconds: 200 } }; s['dupC'] = { ...b, start: '2026-11', end: '', day: 1, createdAt: { seconds: 300 } }; });
+  await page.evaluate(() => localStorage.setItem('__mock', JSON.stringify(window.__store))); await page.reload(); await page.waitForTimeout(900);
+  page._s = await store(); v = car();
+  check('duplicates healed on load, keeping the original end date', v.filter(x => x.start === '2026-11').length === 1 && v.find(x => x.start === '2026-11').end === '2028-10', JSON.stringify(v.map(x => [x.start, x.end])));
+});
+
 await scenario('Export everything, and the 6-monthly reminder', '2026-10-18T10:00:00', async ({ page, store, go }) => {
   check('export reminder shows when never exported', (await page.textContent('#v-home')).includes('Export a backup of everything'));
   const [dl] = await Promise.all([page.waitForEvent('download'), page.click('[data-fold=home-actions] [data-export]')]);
