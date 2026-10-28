@@ -270,5 +270,23 @@ await scenario('Forecast and saved plan', '2026-10-17T22:30:00', async ({ page, 
   check('July 2030 summary shows', (await page.textContent('#planBody')).includes('July 2030'));
 });
 
+await scenario('Yearly payment: move the month of the year via Change and Replace', '2026-10-18T10:00:00', async ({ page, go, store }) => {
+  const openIt = async id => { await go('plan'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.click(`[data-plan="${id}"]`); await page.waitForTimeout(100); };
+  const ins = () => Object.values(page._s.plan_items).filter(x => (x.series || x.id) === 'p-carins');
+  await openIt('p-carins'); await page.click('[data-plan="p-carins"] [data-pm=change]'); await page.waitForTimeout(100);
+  check('month box shows on a yearly item, pre-filled with 11', (await page.inputValue('[data-pform=change] input[name=months]')) === '11');
+  await page.fill('[data-pform=change] input[name=months]', '10'); await page.fill('[data-pform=change] input[name=from]', '2026-10');
+  await page.fill('[data-pform=change] input[name=day]', '28');
+  await page.click('[data-pform=change] button[type=submit]'); await page.waitForTimeout(200);
+  page._s = await store(); let v = ins();
+  check('one version, now paid in October on the 28th', v.length === 1 && JSON.stringify(v[0].months) === '[10]' && v[0].day === 28, JSON.stringify(v.map(x => [x.start, x.end, x.months, x.day])));
+  await openIt('p-carins'); await page.click('[data-plan="p-carins"] [data-pm=change]'); await page.waitForTimeout(100);
+  await page.fill('[data-pform=change] input[name=months]', '13'); await page.click('[data-pform=change] button[type=submit]'); await page.waitForTimeout(200);
+  page._s = await store(); v = ins();
+  check('an invalid month is refused and nothing changes', v.length === 1 && JSON.stringify(v[0].months) === '[10]');
+  await openIt('p-h-life'); await page.click('[data-plan="p-h-life"] [data-pm=change]'); await page.waitForTimeout(100);
+  check('no month box on a monthly item', (await page.locator('[data-pform=change] input[name=months]').count()) === 0);
+});
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
