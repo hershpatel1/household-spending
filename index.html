@@ -768,6 +768,7 @@ function itemForm(p,mode){
    <label class="f">Day of month<input name="day" value="${p?.day==="lwd"?"lwd":v("day")}" placeholder="e.g. 15, or lwd"></label>
    <label class="f">Basis<select name="basis"><option value="fixed"${p?.basis==="fixed"?" selected":""}>Fixed (tick or override)</option><option value="estimate"${p?.basis==="estimate"?" selected":""}>Estimate (ask for actual)</option></select></label>
    ${mode==="add"?`<label class="f">How often<select name="freq"><option value="monthly">Monthly</option><option value="annual">Yearly</option><option value="sixmonthly">Twice yearly</option><option value="oneoff">One-off</option></select></label><label class="f">Months (yearly / twice yearly)<input name="months" placeholder="e.g. 4,10"></label><label class="f">End month (optional)<input type="month" name="end"></label>`:""}
+   ${(mode==="change"||mode==="replace")&&(p?.freq==="annual"||p?.freq==="sixmonthly")?`<label class="f full">Month(s) of the year it is paid (e.g. 10, or 4,10)<input name="months" value="${esc((p.months||[]).join(","))}" placeholder="e.g. 10" required></label>`:""}
    <label class="f">${showWhen?"From month":"Start month"}<input type="month" name="from" value="${mkDef}" required></label>
    ${mode==="change"?`<label class="f full" style="flex-direction:row;align-items:center;gap:8px;text-transform:none;letter-spacing:0;font-weight:400;"><input type="checkbox" name="fix" style="width:auto;min-height:0;"> It was always like this (fix a mistake in every month, not a change from a month)</label>`:""}
    <label class="f full">Note<input name="note" value="${v("note")}"></label>`}
@@ -856,9 +857,12 @@ document.addEventListener("submit",async e=>{
   try{
     if(mode==="end"){await updateDoc(doc(db,"plan_items",p.id),{end:d.last,updatedAt:serverTimestamp()});}
     else if(mode==="change"){const ch={name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim()};
-      if(d.fix){const b=writeBatch(db);seriesOf(p).forEach(x=>{const lk=lockedTo();if(lk&&x.end&&x.end<=mkOf(lk))return;b.update(doc(db,"plan_items",x.id),x.id===p.id?{...ch,updatedAt:serverTimestamp()}:{name:ch.name,day,basis:ch.basis,updatedAt:serverTimestamp()});});await b.commit();}
+      if(d.months!==undefined){const ms=[...new Set(d.months.split(/[ ,]+/).map(Number).filter(x=>x>=1&&x<=12))];if(!ms.length)return setStatus("Enter the month(s), e.g. 10",true);ch.months=ms;}
+      if(d.fix){const b=writeBatch(db);seriesOf(p).forEach(x=>{const lk=lockedTo();if(lk&&x.end&&x.end<=mkOf(lk))return;b.update(doc(db,"plan_items",x.id),x.id===p.id?{...ch,updatedAt:serverTimestamp()}:{name:ch.name,day,basis:ch.basis,...(ch.months?{months:ch.months}:{}),updatedAt:serverTimestamp()});});await b.commit();}
       else await changePlan(p,d.from,ch);}
-    else if(mode==="replace"){await changePlan(p,d.from,{name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim(),status:"confirmed",replaces:p.name},true);}
+    else if(mode==="replace"){const rc={name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim(),status:"confirmed",replaces:p.name};
+      if(d.months!==undefined){const ms=[...new Set(d.months.split(/[ ,]+/).map(Number).filter(x=>x>=1&&x<=12))];if(!ms.length)return setStatus("Enter the month(s), e.g. 10",true);rc.months=ms;}
+      await changePlan(p,d.from,rc,true);}
     else{const months=(d.months||"").split(/[ ,]+/).map(Number).filter(n=>n>=1&&n<=12);if((d.freq==="annual"||d.freq==="sixmonthly")&&!months.length)return setStatus("Enter the month(s), e.g. 4,10",true);
       const ref=doc(collection(db,"plan_items"));await setDoc(ref,{name:d.name.trim(),account:d.account,kind:d.to&&d.kind!=="in"?"transfer":d.kind,to:d.kind==="in"?"":d.to,amount:parseFloat(d.amount)||0,day,basis:d.basis,freq:d.freq,months,start:d.from,end:d.end||"",status:"confirmed",note:d.note.trim(),series:ref.id,createdAt:serverTimestamp()});}
     setStatus("Plan updated");planMode=null;adding=false;planOpen=null;renderPlan();
