@@ -457,7 +457,7 @@ function listen(){
   col("transactions",l=>TX=l.map(norm));
   col("budgets",l=>{BUDGETS={};l.forEach(d=>BUDGETS[d.id]=d);});
   col("annualBudgets",l=>{ANNUAL={};l.forEach(d=>ANNUAL[d.id]=d);});
-  col("plan_items",l=>{PLAN=l;setTimeout(healPlan,0);});
+  col("plan_items",l=>{PLAN=l.filter(p=>!GHOST.has(p.id));setTimeout(healPlan,0);});
   col("actions",l=>ACTIONS=l);
   col("planned_payments",l=>PLANNED=l);
   col("budget_rules",l=>{RULES=l;});
@@ -837,18 +837,24 @@ async function undoChange(p,n){ // remove a scheduled change and let the earlier
   const b=writeBatch(db);b.delete(doc(db,"plan_items",n.id));b.update(doc(db,"plan_items",p.id),{end:n.end||"",updatedAt:serverTimestamp()});await b.commit();
 }
 // self-heal: two versions of the same payment starting in the same month are duplicates; keep the first, with the latest edit
-let healing=false;
+let healing=false;const GHOST=new Set(),healSkip=new Set();
 async function healPlan(){
   if(healing||!LOADED.has("plan_items"))return;
-  const g={};PLAN.filter(p=>p.freq!=="oneoff").forEach(p=>{const k=(p.series||p.id)+"|"+(p.start||"");(g[k]=g[k]||[]).push(p);});
-  const dups=Object.values(g).filter(l=>l.length>1);if(!dups.length)return;
-  healing=true;
+  const g={};PLAN.filter(p=>p.freq!=="oneoff"&&!GHOST.has(p.id)).forEach(p=>{const k=(p.series||p.id)+"|"+(p.start||"");(g[k]=g[k]||[]).push(p);});
+  const dups=Object.entries(g).filter(([k,l])=>l.length>1&&!healSkip.has(k));if(!dups.length)return;
+  healing=true;let retry=false;
   try{const b=writeBatch(db);const sec=x=>x.createdAt?.seconds||0,usec=x=>x.updatedAt?.seconds||sec(x);
-    dups.forEach(l=>{l.sort((a,c)=>sec(a)-sec(c));const keep=l[0],last=l.slice().sort((a,c)=>usec(c)-usec(a))[0];
+    dups.forEach(([k,l])=>{l.sort((a,c)=>sec(a)-sec(c));const keep=l[0],last=l.slice().sort((a,c)=>usec(c)-usec(a))[0];
       b.update(doc(db,"plan_items",keep.id),{name:last.name,amount:last.amount,day:last.day,basis:last.basis,note:last.note||"",updatedAt:serverTimestamp()});
       l.slice(1).forEach(x=>b.delete(doc(db,"plan_items",x.id)));});
-    await b.commit();logError("healPlan",`removed ${dups.reduce((s,l)=>s+l.length-1,0)} duplicate plan version(s)`);
-  }catch(err){logError("healPlan",err.message);}finally{healing=false;}
+    await b.commit();logError("healPlan",`removed ${dups.reduce((s,[k,l])=>s+l.length-1,0)} duplicate plan version(s)`);
+  }catch(err){logError("healPlan",err.message);
+    // a stale local copy of a document that no longer exists on the server: drop it from view and try again once, instead of failing in a loop
+    const m=/plan_items\/([^\s\/]+)/.exec(err.message||"");
+    if(m&&!GHOST.has(m[1])){GHOST.add(m[1]);PLAN=PLAN.filter(p=>p.id!==m[1]);retry=true;render();}
+    else dups.forEach(([k])=>healSkip.add(k));
+  }finally{healing=false;}
+  if(retry)setTimeout(healPlan,0);
 }
 document.addEventListener("submit",async e=>{
   const f=e.target.closest("[data-pform]");if(!f)return;e.preventDefault();
