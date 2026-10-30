@@ -288,5 +288,17 @@ await scenario('Yearly payment: move the month of the year via Change and Replac
   check('no month box on a monthly item', (await page.locator('[data-pform=change] input[name=months]').count()) === 0);
 });
 
+await scenario('Stale local plan document: heal does not loop or flicker', '2026-10-28T22:00:00', async ({ page, go, store }) => {
+  page._s = await store(); const car = page._s.plan_items['p-s-car'];
+  await page.addInitScript(c => { window.__strict = true; window.__ghosts = { plan_items: { 'p-ghost': { ...c, createdAt: { seconds: 1 } } } }; }, car);
+  await page.reload(); await page.waitForTimeout(1500);
+  const log = await page.evaluate(() => Object.keys(localStorage).filter(k => /err/i.test(k)).map(k => localStorage.getItem(k)).join(''));
+  const n = (log.match(/healPlan/g) || []).length;
+  check('heal fails at most twice, not in a loop', n >= 1 && n <= 2, 'healPlan log entries: ' + n);
+  await go('plan'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true));
+  const rows = await page.locator('[data-plan="p-s-car"]').count();
+  check('the real item still shows once and the stale copy is hidden', rows === 1 && (await page.locator('[data-plan="p-ghost"]').count()) === 0, 'rows ' + rows);
+});
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
