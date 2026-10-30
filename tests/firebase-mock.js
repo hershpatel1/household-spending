@@ -17,5 +17,5 @@ export const setDoc=async(r,d,o)=>{mset(r,d,o);fire();};
 export const updateDoc=async(r,d)=>{col(r.c)[r.id]={...col(r.c)[r.id],...d};fire();};
 export const deleteDoc=async r=>{delete col(r.c)[r.id];fire();};
 export const getDoc=async r=>{const v=col(r.c)[r.id];return {exists:()=>!!v,data:()=>v};};
-export const writeBatch=()=>{const ops=[];return {set:(r,d,o)=>ops.push(()=>mset(r,d,o)),update:(r,d)=>ops.push(()=>{col(r.c)[r.id]={...col(r.c)[r.id],...d};}),delete:r=>ops.push(()=>{delete col(r.c)[r.id];}),commit:async()=>{ops.forEach(f=>f());fire();}};};
-export const onSnapshot=(r,cb)=>{const f=()=>{ if(r.id){const v=col(r.c)[r.id];cb({exists:()=>!!v,data:()=>v});} else cb({docs:Object.entries(col(r.c)).map(([id,v])=>({id,data:()=>v}))}); };L.push(f);setTimeout(f,0);return ()=>{};};
+export const writeBatch=()=>{const ops=[],chk=[];return {set:(r,d,o)=>ops.push(()=>mset(r,d,o)),update:(r,d)=>{chk.push(r);ops.push(()=>{col(r.c)[r.id]={...col(r.c)[r.id],...d};});},delete:r=>ops.push(()=>{delete col(r.c)[r.id];}),commit:async()=>{if(window.__strict){const miss=chk.find(r=>!col(r.c)[r.id]);if(miss){fire();throw new Error('No document to update: projects/x/databases/(default)/documents/'+miss.c+'/'+miss.id);}}ops.forEach(f=>f());fire();}};};
+export const onSnapshot=(r,cb)=>{const f=()=>{ if(r.id){const v=col(r.c)[r.id];cb({exists:()=>!!v,data:()=>v});} else cb({docs:Object.entries(col(r.c)).concat(Object.entries(((window.__ghosts||{})[r.c])||{})).map(([id,v])=>({id,data:()=>v}))}); };L.push(f);setTimeout(f,0);return ()=>{};};
