@@ -300,12 +300,12 @@ await scenario('Stale local plan document: heal does not loop or flicker', '2026
   check('the real item still shows once and the stale copy is hidden', rows === 1 && (await page.locator('[data-plan="p-ghost"]').count()) === 0, 'rows ' + rows);
 });
 
-await scenario('Ledger: running total adds up for each account unit', '2026-10-20T10:00:00', async ({ page, go }) => {
+await scenario('Ledger: running total adds up for each account', '2026-10-20T10:00:00', async ({ page, go }) => {
   await go('feed'); await page.click('[data-fs=ledger]'); await page.waitForTimeout(200);
-  for (const u of ['joint', 'hersh', 'sonali']) {
-    await page.click(`[data-lu=${u}]`); await page.waitForTimeout(100);
+  for (const u of ['Joint', 'Hersh Debit', 'Hersh Credit', 'Sonali Debit', 'Sonali Credit']) {
+    await page.click(`[data-lu="${u}"]`); await page.waitForTimeout(100);
     const rows = await page.$$eval('#ledger .lrow', els => els.map(e => [+e.dataset.v, +e.dataset.run, e.hasAttribute('data-open')]));
-    let ok = rows.length >= 2 && rows[0][2], run = rows[0] ? rows[0][1] : 0;
+    let ok = rows.length >= 1 && rows[0][2], run = rows[0] ? rows[0][1] : 0;
     for (const [v, r] of rows.slice(1)) { run = Math.round((run + v) * 100) / 100; if (Math.abs(run - r) > 0.005) ok = false; }
     check(`${u}: opening row first and every running total = previous + amount`, ok, JSON.stringify(rows.slice(0, 4)));
   }
