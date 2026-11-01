@@ -759,11 +759,11 @@ function renderFeed(){
 
 document.addEventListener("click",e=>{const b=e.target.closest("[data-hometick]");if(b)meItem(b.dataset.mid,b.dataset.hometick,{status:"ticked",amount:null});}); // tick a regular payment from Home; Month-end shows it ticked and Override still works
 /* ================= LEDGER ================= */
-let feedSeg="feed",ledgerUnit="joint";
+let feedSeg="feed",ledgerUnit="Joint";const LEDGER_ACCS=["Joint","Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit"];
 $$("#feedSeg button").forEach(b=>b.addEventListener("click",()=>{feedSeg=b.dataset.fs;$$("#feedSeg button").forEach(x=>x.classList.toggle("on",x===b));renderFeed();$("ledgerToday")?.scrollIntoView({block:"center"});}));
 document.addEventListener("click",e=>{const u=e.target.closest("[data-lu]");if(u){ledgerUnit=u.dataset.lu;renderLedger();}});
 function renderLedger(){ // one account unit, oldest first: opening balance, then logged transactions and regular payments (confirmed, or expected until confirmed), with a running total
-  const unit=UNITS.find(u=>u.key===ledgerUnit)||UNITS[0],mid=currentMEId(),op=openingFor(mid),today=todayISO(),end=addDays(today,45)>op.date?addDays(today,45):op.date;
+  const acc1=LEDGER_ACCS.includes(ledgerUnit)?ledgerUnit:"Joint",unit={key:acc1,accounts:[acc1]},mid=currentMEId(),op=openingFor(mid),today=todayISO(),end=addDays(today,45)>op.date?addDays(today,45):op.date;
   const items=(ME[mid]||{}).items||{},occ=occurrences(op.date,end),prev=lastClose(mid);
   if(prev)Object.entries(prev.items||{}).forEach(([k,it])=>{if(it&&it.status==="notyet"&&!occ.some(o=>o.key===k)){const[id,omk]=k.split("@"),p=PLAN.find(x=>x.id===id);if(p)occ.push({p,mk:omk,date:op.date,key:k});}});
   const rows=[];
@@ -776,12 +776,12 @@ function renderLedger(){ // one account unit, oldest first: opening balance, the
   const pend=unit.accounts.reduce((s,a)=>s+pendingOf(op.pending,a),0);
   let run=r2(unit.accounts.reduce((s,a)=>s+(Number(op.balances[a])||0),0)),shownToday=false;
   const line=(title,date,v,run,chip,cls,extra,dv)=>`<div class="row lrow" data-v="${v}" data-run="${run}"${extra||""} style="padding:10px 12px;${cls==="grey"?"opacity:.7;":""}"><div class="row-top"><span class="row-title"${dv==="miss"?' style="text-decoration:line-through;"':""}>${esc(title)}</span><span class="row-amt num ${v>0?"in":""}">${v?money(v,true):"-"}</span></div><div class="row-meta"><span class="chip ${cls}">${chip}</span><span>${dateShort(date)}</span><span class="num" style="margin-left:auto;font-weight:600;">${money(run)}</span></div></div>`;
-  let h=`<div class="seg" style="margin-bottom:10px;">${UNITS.map(u=>`<button data-lu="${u.key}" class="${u.key===unit.key?"on":""}">${u.label}</button>`).join("")}</div>`;
+  let h=`<div class="seg" style="margin-bottom:10px;flex-wrap:wrap;">${LEDGER_ACCS.map(a=>`<button data-lu="${a}" class="${a===acc1?"on":""}">${a}</button>`).join("")}</div>`;
   h+=`<div class="rows">`+line("Opening balance",op.date,0,run,"Opening","grey"," data-open=\"1\"");
   if(pend){run=r2(run+pend);h+=line("Pending at opening",op.date,pend,run,"Pending","grey");}
   rows.forEach(r=>{if(!shownToday&&r.date>today){shownToday=true;h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;}run=r2(run+r.v);h+=line(r.title,r.date,r.v,run,r.chip,r.cls,"",r.st);});
   if(!shownToday)h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;
-  h+=`</div><div class="summary"><span>Expected balance to ${dateShort(end)}</span><span class="num">${money(run)}</span></div><div class="note small">${unit.accounts.length>1?"Current account net of card; card repayments are not logged. ":""}Running total = opening balance + logged transactions + regular payments (confirmed, or expected until you confirm them at month-end). Pending items are shown at the top.</div>`;
+  h+=`</div><div class="summary"><span>Expected balance to ${dateShort(end)}</span><span class="num">${money(run)}</span></div><div class="note small">${acc1.includes("Credit")?"Card repayments from the current account are not logged, so this balance only moves with spends and regular payments on the card. ":""}Running total = opening balance + logged transactions + regular payments (confirmed, or expected until you confirm them at month-end). Pending items are shown at the top.</div>`;
   $("ledger").innerHTML=h;
 }
 
