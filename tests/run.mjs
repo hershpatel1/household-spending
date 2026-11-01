@@ -300,5 +300,32 @@ await scenario('Stale local plan document: heal does not loop or flicker', '2026
   check('the real item still shows once and the stale copy is hidden', rows === 1 && (await page.locator('[data-plan="p-ghost"]').count()) === 0, 'rows ' + rows);
 });
 
+await scenario('Ledger: running total adds up for each account unit', '2026-10-20T10:00:00', async ({ page, go }) => {
+  await go('feed'); await page.click('[data-fs=ledger]'); await page.waitForTimeout(200);
+  for (const u of ['joint', 'hersh', 'sonali']) {
+    await page.click(`[data-lu=${u}]`); await page.waitForTimeout(100);
+    const rows = await page.$$eval('#ledger .lrow', els => els.map(e => [+e.dataset.v, +e.dataset.run, e.hasAttribute('data-open')]));
+    let ok = rows.length >= 2 && rows[0][2], run = rows[0] ? rows[0][1] : 0;
+    for (const [v, r] of rows.slice(1)) { run = Math.round((run + v) * 100) / 100; if (Math.abs(run - r) > 0.005) ok = false; }
+    check(`${u}: opening row first and every running total = previous + amount`, ok, JSON.stringify(rows.slice(0, 4)));
+  }
+  await page.click('[data-fs=feed]'); await page.waitForTimeout(100);
+  check('Feed view returns and the ledger hides', (await page.locator('#ledger').isHidden()) && (await page.locator('#feed').isVisible()));
+});
+
+await scenario('Home: tick a regular payment as you go, Month-end shows it ticked and override still works', '2026-10-31T12:00:00', async ({ page, go, store }) => {
+  await go('home'); await page.waitForTimeout(200);
+  const n = await page.locator('[data-hometick]').count();
+  check('Home lists payments that have gone and can be ticked', n >= 1, 'tick buttons: ' + n);
+  const key = await page.locator('[data-hometick]').first().getAttribute('data-hometick');
+  await page.locator('[data-hometick]').first().click(); await page.waitForTimeout(300);
+  const s = await store(); const ticked = Object.values(s.month_ends || {}).flatMap(m => Object.entries(m.items || {})).find(([k]) => k === key);
+  check('the tick is saved against the month-end item', !!ticked && ticked[1].status === 'ticked');
+  check('the ticked payment leaves the to-tick list', (await page.locator('[data-hometick]').count()) === n - 1);
+  await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.v2meta.opening.setup = false; localStorage.setItem('__mock', JSON.stringify(m)); }); await page.reload(); await page.waitForTimeout(800);
+  await go('me'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(300);
+  check('Month-end shows it ticked, and Override is still offered', (await page.locator(`[data-metick="${key}"].on`).count()) === 1 && (await page.locator(`[data-meovr="${key}"]`).count()) === 1);
+});
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
