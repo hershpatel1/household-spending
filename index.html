@@ -185,6 +185,7 @@ details.fold.inner>.fb{padding:0 12px 10px;}
     <div class="section" style="margin-top:20px;"><div class="eyebrow">Logged today</div><div id="todayList"></div></div>
   </section>
   <section id="v-feed" class="hidden">
+    <div class="seg" id="feedSeg" style="margin-bottom:12px;"><button data-fs="feed" class="on">Feed</button><button data-fs="ledger">Ledger</button></div>
     <div class="filters">
       <div class="filter-scroll">
         <select id="flPeriod"></select><select id="flPot"></select><select id="flAccount"></select><select id="flCategory"></select><select id="flPaidBy"></select><select id="flDir"></select><select id="flType"></select>
@@ -194,6 +195,7 @@ details.fold.inner>.fb{padding:0 12px 10px;}
       <div class="summary"><span id="feedCount"></span><span id="feedTotal" class="num"></span></div><div id="feedPlanned" style="margin-top:6px;"></div>
     </div>
     <div id="feed"></div>
+    <div id="ledger" class="hidden"></div>
   </section>
   <section id="v-plan" class="hidden">
     <div class="seg" id="planSeg" style="margin-bottom:16px;">
@@ -611,7 +613,9 @@ function renderHome(){
   const mtx=TX.filter(x=>x.monthKey===mk), fy=fyStart(mk), fyTx=TX.filter(x=>fyStart(x.monthKey)===fy);
   const fl=lc?float(lc.balances):float((OPENING||SEED_OPENING).balances);
   const flDate=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
-  const upcoming=occurrences(addDays(t,-1),addDays(t,14));
+  const _mid=currentMEId(),_op=openingFor(_mid),_items=(ME[_mid]||{}).items||{}; // payments that should have gone but are not yet ticked come first, so they can be ticked as you go
+  const upcoming=occurrences(_op.date,addDays(t,-1)).filter(o=>!_items[o.key]&&mkOf(o.date)===_mid).concat(occurrences(addDays(t,-1),addDays(t,14)));
+  const homeTick=o=>{if(mkOf(o.date)!==_mid||ME[_mid]?.status==="closed")return"";const it=_items[o.key];if(it)return it.status==="ticked"?` <span class="chip">Ticked</span>`:"";if(o.date>t)return"";return o.p.basis==="estimate"?` <span class="muted">· actual at month-end</span>`:` <button class="btn sm" data-hometick="${o.key}" data-mid="${_mid}" style="padding:2px 10px;min-height:26px;margin-left:4px;">Tick</button>`;};
   $("v-home").innerHTML=`
   <div class="section"><div class="card">
     <div class="acc-h"><div class="eyebrow" style="margin:0;">Month-end · ${monthLabel(mid)}</div>${ME[mid]?.status==="open"?`<span class="chip warn">In progress</span>`:""}</div>
@@ -620,7 +624,7 @@ function renderHome(){
   </div></div>
   <div class="section"><div class="grid-2">
     <div class="card"><div class="eyebrow">Float</div><div class="kpi num">${money0(fl)}</div><div class="small muted">Hersh and Sonali current accounts less cards, at ${dateShort(flDate)}. Floor £10,000.</div>${(()=>{if(!BASELINE||!BASELINE.rows)return"";const f=liveForecast(),e=f.rows[f.rows.length-1],b=BASELINE.rows[S.horizon];return b?`<div class="small" style="margin-top:8px;">July 2030 net liquid position ${money0(e.nw)} ${vsPlan(e.nw,b.nw).chip}</div>`:"";})()}</div>
-    <div class="card"><div class="eyebrow">Next 14 days</div>${upcoming.length?upcoming.slice(0,5).map(o=>`<div class="li" style="padding:6px 0;"><div class="small"><b>${esc(o.p.name)}</b><div class="muted">${dateShort(o.date)} · ${esc(o.p.account)}</div></div><div class="r num small" style="${o.p.kind==="in"?"color:var(--teal-dark)":""}">${o.p.kind==="in"?"+":"-"}${money(o.p.amount)}</div></div>`).join("")+(upcoming.length>5?`<div class="small muted">and ${upcoming.length-5} more</div>`:""):`<div class="note">Nothing due.</div>`}</div>
+    <div class="card"><div class="eyebrow">Next 14 days</div>${upcoming.length?upcoming.slice(0,8).map(o=>`<div class="li" style="padding:6px 0;"><div class="small"><b>${esc(o.p.name)}</b><div class="muted">${dateShort(o.date)} · ${esc(o.p.account)}${homeTick(o)}</div></div><div class="r num small" style="${o.p.kind==="in"?"color:var(--teal-dark)":""}">${o.p.kind==="in"?"+":"-"}${money(o.p.amount)}</div></div>`).join("")+(upcoming.length>8?`<div class="small muted">and ${upcoming.length-8} more</div>`:""):`<div class="note">Nothing due.</div>`}</div>
   </div></div>
   <div class="section">${fold("home-actions","Actions",`${todo.length} open${oneoffs.length?` · ${oneoffs.length} one-off${oneoffs.length>1?"s":""} to pay`:""}`,todo.some(a=>a.dueDate<t)||oneoffs.some(x=>x.date<t)?`<span class="chip warn">Overdue</span>`:todo.some(a=>a.dueDate<=addDays(t,7))?`<span class="chip warn">Due soon</span>`:"",true,`<div>${merged.length?merged.map(m=>m.h).join(""):`<div class="empty">Nothing due in the next month.</div>`}
     <div class="actions-row" style="justify-content:space-between;"><button class="btn ghost sm" id="toggleActions">${showAllActions?"Next month only":`Show all (${todo.length})`}</button><button class="btn ghost sm" id="addActionBtn">Add action</button></div>
@@ -737,6 +741,7 @@ document.addEventListener("click",e=>{
   const r=e.target.closest("[data-row]");if(r)r.classList.toggle("open");
 });
 function renderFeed(){
+  {const lg=feedSeg==="ledger";$("v-feed").querySelector(".filters").classList.toggle("hidden",lg);$("feed").classList.toggle("hidden",lg);$("ledger").classList.toggle("hidden",!lg);if(lg)return renderLedger();}
   Object.entries(FMAP).forEach(([id,k])=>{const el=$(id);if(el.tagName==="SELECT")el.classList.toggle("set",!!FL[k]&&!(k==="period"&&FL[k]==="this"));});
   $("customRange").classList.toggle("hidden",FL.period!=="custom");
   const list=filtered().sort((a,b)=>b.date.localeCompare(a.date)||(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
@@ -750,6 +755,34 @@ function renderFeed(){
   if(!list.length){$("feed").innerHTML=`<div class="empty">No transactions match these filters.</div>`;return;}
   const t0=todayISO(),y0=addDays(t0,-1),days={};list.forEach(t=>(days[t.date]=days[t.date]||[]).push(t));
   $("feed").innerHTML=Object.keys(days).sort().reverse().map(d=>`<div class="day"><div class="day-h"><span>${d===t0?"Today":d===y0?"Yesterday":dateLong(d)}</span><span class="num">${money(days[d].reduce((s,t)=>s+rowAmount(t).val,0),true)}</span></div><div class="rows">${days[d].map(rowHTML).join("")}</div></div>`).join("");
+}
+
+document.addEventListener("click",e=>{const b=e.target.closest("[data-hometick]");if(b)meItem(b.dataset.mid,b.dataset.hometick,{status:"ticked",amount:null});}); // tick a regular payment from Home; Month-end shows it ticked and Override still works
+/* ================= LEDGER ================= */
+let feedSeg="feed",ledgerUnit="joint";
+$$("#feedSeg button").forEach(b=>b.addEventListener("click",()=>{feedSeg=b.dataset.fs;$$("#feedSeg button").forEach(x=>x.classList.toggle("on",x===b));renderFeed();$("ledgerToday")?.scrollIntoView({block:"center"});}));
+document.addEventListener("click",e=>{const u=e.target.closest("[data-lu]");if(u){ledgerUnit=u.dataset.lu;renderLedger();}});
+function renderLedger(){ // one account unit, oldest first: opening balance, then logged transactions and regular payments (confirmed, or expected until confirmed), with a running total
+  const unit=UNITS.find(u=>u.key===ledgerUnit)||UNITS[0],mid=currentMEId(),op=openingFor(mid),today=todayISO(),end=addDays(today,45)>op.date?addDays(today,45):op.date;
+  const items=(ME[mid]||{}).items||{},occ=occurrences(op.date,end),prev=lastClose(mid);
+  if(prev)Object.entries(prev.items||{}).forEach(([k,it])=>{if(it&&it.status==="notyet"&&!occ.some(o=>o.key===k)){const[id,omk]=k.split("@"),p=PLAN.find(x=>x.id===id);if(p)occ.push({p,mk:omk,date:op.date,key:k});}});
+  const rows=[];
+  TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=end).forEach(t=>{const v=r2(unit.accounts.reduce((s,a)=>s+txEffect(t,a),0));if(v)rows.push({date:t.date,o:0,title:t.retailer||"(no description)",chip:"Logged",cls:"",v});});
+  const ST={exp:["Expected","grey"],conf:["Confirmed",""],ovr:["Confirmed, actual",""],miss:["Missing","warn"],notyet:["Not gone yet","grey"]};
+  occ.forEach(o=>{if(!unit.accounts.some(a=>o.p.account===a||o.p.to===a))return;const it=items[o.key],st=!it?"exp":it.status==="ticked"?"conf":it.status==="override"?"ovr":it.status==="missing"?"miss":"notyet";
+    const amt=st==="miss"||st==="notyet"?0:(it&&it.amount!=null?Number(it.amount):Number(o.p.amount)),v=r2(unit.accounts.reduce((s,a)=>s+occEffect(o,amt,a),0));
+    if(!v&&st!=="miss"&&st!=="notyet")return;rows.push({date:(it&&it.date)||o.date,o:1,title:o.p.name,chip:ST[st][0],cls:ST[st][1],v,st});});
+  rows.sort((a,b)=>a.date.localeCompare(b.date)||a.o-b.o||a.title.localeCompare(b.title));
+  const pend=unit.accounts.reduce((s,a)=>s+pendingOf(op.pending,a),0);
+  let run=r2(unit.accounts.reduce((s,a)=>s+(Number(op.balances[a])||0),0)),shownToday=false;
+  const line=(title,date,v,run,chip,cls,extra,dv)=>`<div class="row lrow" data-v="${v}" data-run="${run}"${extra||""} style="padding:10px 12px;${cls==="grey"?"opacity:.7;":""}"><div class="row-top"><span class="row-title"${dv==="miss"?' style="text-decoration:line-through;"':""}>${esc(title)}</span><span class="row-amt num ${v>0?"in":""}">${v?money(v,true):"-"}</span></div><div class="row-meta"><span class="chip ${cls}">${chip}</span><span>${dateShort(date)}</span><span class="num" style="margin-left:auto;font-weight:600;">${money(run)}</span></div></div>`;
+  let h=`<div class="seg" style="margin-bottom:10px;">${UNITS.map(u=>`<button data-lu="${u.key}" class="${u.key===unit.key?"on":""}">${u.label}</button>`).join("")}</div>`;
+  h+=`<div class="rows">`+line("Opening balance",op.date,0,run,"Opening","grey"," data-open=\"1\"");
+  if(pend){run=r2(run+pend);h+=line("Pending at opening",op.date,pend,run,"Pending","grey");}
+  rows.forEach(r=>{if(!shownToday&&r.date>today){shownToday=true;h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;}run=r2(run+r.v);h+=line(r.title,r.date,r.v,run,r.chip,r.cls,"",r.st);});
+  if(!shownToday)h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;
+  h+=`</div><div class="summary"><span>Expected balance to ${dateShort(end)}</span><span class="num">${money(run)}</span></div><div class="note small">${unit.accounts.length>1?"Current account net of card; card repayments are not logged. ":""}Running total = opening balance + logged transactions + regular payments (confirmed, or expected until you confirm them at month-end). Pending items are shown at the top.</div>`;
+  $("ledger").innerHTML=h;
 }
 
 /* ================= PLAN ================= */
