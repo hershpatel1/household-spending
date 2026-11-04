@@ -16,11 +16,11 @@ The app talks straight to the Firebase project `household-budget-e2592` (Firesto
 
 ## Screens
 
-- **Home**: month-end status, float, next 14 days, actions and one-offs to pay, budgets (month or year to date), Household Investment.
+- **Home**: month-end status, float, next 14 days (tick regular payments or enter an estimate's actual as you go), actions and one-offs to pay, budgets (month or year to date), Household Investment.
 - **Log**: spend, refund, income (with bonus), transfer (including to a pension or between ISAs).
-- **Transactions**: bank-style feed with filters.
+- **Transactions**: bank-style feed with filters, and a Ledger per account (Joint, Hersh and Sonali debit and credit) with a running total of logged transactions plus regular payments, expected or confirmed.
 - **Plan**: regular payments by account, budgets, one-offs, and the forecast against the saved plan.
-- **Month-end**: tick regular payments, payslips and the £99,000 test, tie each current account to £0.00, record mortgage, ISAs and pensions, next month's moves.
+- **Month-end**: tick regular payments (Commuting is calculated from transactions logged under the Commuting budget), payslips and the £99,000 test, tie each current account to £0.00, record mortgage, ISAs and pensions, next month's moves.
 
 ## Data (Firestore collections)
 
