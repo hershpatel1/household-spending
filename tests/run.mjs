@@ -321,10 +321,24 @@ await scenario('Home: tick a regular payment as you go, Month-end shows it ticke
   await page.locator('[data-hometick]').first().click(); await page.waitForTimeout(300);
   const s = await store(); const ticked = Object.values(s.month_ends || {}).flatMap(m => Object.entries(m.items || {})).find(([k]) => k === key);
   check('the tick is saved against the month-end item', !!ticked && ticked[1].status === 'ticked');
-  check('the ticked payment leaves the to-tick list', (await page.locator('[data-hometick]').count()) === n - 1);
+  check('the ticked payment no longer has a Tick button', (await page.locator(`[data-hometick="${key}"]`).count()) === 0);
   await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.v2meta.opening.setup = false; localStorage.setItem('__mock', JSON.stringify(m)); }); await page.reload(); await page.waitForTimeout(800);
   await go('me'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(300);
   check('Month-end shows it ticked, and Override is still offered', (await page.locator(`[data-metick="${key}"].on`).count()) === 1 && (await page.locator(`[data-meovr="${key}"]`).count()) === 1);
+});
+
+await scenario('Home: estimates take an actual; Commuting is calculated from Commuting transactions', '2026-10-31T12:00:00', async ({ page, go, store }) => {
+  await go('home'); await page.waitForTimeout(200);
+  const inp = page.locator('[data-homeact]').first(); const n = await page.locator('[data-homeact]').count();
+  check('estimates in the list have an Actual box', n >= 1, 'boxes: ' + n);
+  const key = await inp.getAttribute('data-homeact'); await inp.fill('123.45'); await inp.dispatchEvent('change'); await page.waitForTimeout(300);
+  const s = await store(); const it = Object.values(s.month_ends || {}).flatMap(m => Object.entries(m.items || {})).find(([k]) => k === key);
+  check('the actual is saved as the month-end actual', !!it && it[1].status === 'actual' && it[1].amount === 123.45, JSON.stringify(it));
+  await go('log'); check('Commuting is a budget you can log against', (await page.locator('#fPot option[value=commuting]').count()) === 1);
+  await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.v2meta.opening.setup = false; m.transactions['t-rail'] = { date: '2026-10-29', monthKey: '2026-10', direction: 'out', value: 111.11, pot: 'commuting', category: 'Travel', account: 'Hersh Debit', paidBy: 'Hersh', retailer: 'Rail' }; localStorage.setItem('__mock', JSON.stringify(m)); });
+  await page.reload(); await page.waitForTimeout(800); await go('me'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(300);
+  const me = await page.locator('#v-me').innerText();
+  check('Month-end Commuting is calculated from Commuting transactions (111.11), with no actual box', /Calculated from your logged Commuting/.test(me) && /111\.11/.test(me) && (await page.locator('[data-meest*="p-h-rail"]').count()) === 0);
 });
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
