@@ -51,7 +51,7 @@ await scenario('Log a spend and a transfer', '2026-10-20T12:00:00', async ({ pag
   await go('log'); await page.fill('#fValue', '12.34'); await page.fill('#fRetailer', 'Waitrose'); await page.click('#submitBtn'); await page.waitForTimeout(100);
   await page.click('#typeSeg button[data-t=transfer]'); await page.selectOption('#fAccount', 'Hersh Debit');
   const toOpts = await page.$$eval('#fTo option', o => o.filter(x => !x.hidden).map(x => x.value));
-  check('own card is not offered as a transfer destination', !toOpts.includes('Hersh Credit'));
+  check('own card is offered as a transfer destination (card repayment), but not the account itself', toOpts.includes('Hersh Credit') && !toOpts.includes('Hersh Debit'));
   check('pension destination is labelled', (await page.$$eval('#fTo option', o => o.map(x => x.textContent))).includes('Hersh personal pension'));
   const tx = Object.values((await store()).transactions);
   check('spend saved', tx.some(t => t.retailer === 'Waitrose' && t.type === 'spend' && t.value === 12.34));
@@ -342,7 +342,7 @@ await scenario('Home: estimates take an actual; Commuting is calculated from Com
 });
 
 await scenario('Card repayment: a transfer from a current account to the same person\'s card can be logged and nets out', '2026-10-28T10:00:00', async ({ page, go, store }) => {
-  await go('log'); await page.click('#typeSeg button[data-t=transfer]'); await page.selectOption('#fAccount', 'Hersh Debit'); await page.selectOption('#fTo', 'Hersh Credit');
+  await go('log'); await page.click('#typeSeg button[data-t=transfer]'); await page.selectOption('#fAccount', 'Hersh Debit'); check('Hersh Credit is a visible choice in To account', (await page.$$eval('#fTo option', o => o.filter(x => !x.hidden).map(x => x.value))).includes('Hersh Credit')); await page.selectOption('#fTo', 'Hersh Credit');
   await page.fill('#fValue', '500'); await page.fill('#fRetailer', 'Card repayment'); await page.click('#submitBtn'); await page.waitForTimeout(300);
   const s = await store(); const tx = Object.values(s.transactions).find(t => t.retailer === 'Card repayment');
   check('the repayment is saved as a transfer from Hersh Debit to Hersh Credit', !!tx && tx.type === 'transfer' && tx.account === 'Hersh Debit' && tx.toAccount === 'Hersh Credit' && tx.value === 500, JSON.stringify(tx));
