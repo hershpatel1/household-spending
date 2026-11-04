@@ -688,7 +688,7 @@ $("logForm").addEventListener("submit",async e=>{
   if(logType==="spend"||logType==="refund")p={...base,type:"spend",direction:logType==="spend"?"out":"in",pot:$("fPot").value,category:$("fCategory").value,paidBy:$("fPaidBy").value,toAccount:null,bonus:false};
   else if(logType==="income")p={...base,type:"income",direction:"in",pot:"income",category:"Income",paidBy:ownerOf(account),toAccount:null,bonus:$("fBonus").checked};
   else{const to=$("fTo").value;if(to===account)return setStatus("From and to must differ",true);
-    if(unitOf(account)&&unitOf(account)===unitOf(to))return setStatus("No need to log this: a card repayment between your own card and current account cancels out at month-end.",true);p={...base,type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:ownerOf(account),toAccount:to,bonus:false};}
+    p={...base,type:"transfer",direction:"out",pot:"transfer",category:"Transfer",paidBy:ownerOf(account),toAccount:to,bonus:false};}
   try{if(editingId)await updateDoc(doc(db,"transactions",editingId),p);else await addDoc(collection(db,"transactions"),{...p,createdAt:serverTimestamp()});setStatus((editingId?"Saved ":"Added ")+money(value)+" · "+p.retailer);resetLog();}catch(err){fail(err);}
 });
 $("cancelEdit").addEventListener("click",resetLog);
