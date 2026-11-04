@@ -232,7 +232,10 @@ const ACCOUNTS=["Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit","Joi
 const BANK=ACCOUNTS.filter(a=>a!=="Cash");
 const CARDS=["Hersh Credit","Sonali Credit"];
 const PAID_BY=["Hersh","Sonali"];
-const POTS=[{key:"dayToDay",label:"Day-to-day",cycle:"monthly"},{key:"riyaan",label:"Riyaan",cycle:"monthly"},{key:"exceptionals",label:"Exceptionals",cycle:"annual"},{key:"holidays",label:"Holidays",cycle:"annual"},{key:"householdInvestment",label:"Household Investment",cycle:"open"}];
+const POTS=[{key:"dayToDay",label:"Day-to-day",cycle:"monthly"},{key:"riyaan",label:"Riyaan",cycle:"monthly"},{key:"exceptionals",label:"Exceptionals",cycle:"annual"},{key:"holidays",label:"Holidays",cycle:"annual"},{key:"householdInvestment",label:"Household Investment",cycle:"open"},{key:"commuting",label:"Commuting",cycle:"open"}];
+// Commuting (the plan line still called Rail) is logged as spend under the Commuting budget; the month-end amount is calculated from those transactions
+const isLogged=p=>p.basis==="logged"||/^p-h-rail/.test(p.id)||p.name==="Rail"||p.name==="Commuting";
+const loggedAmt=(p,mk)=>r2(TX.filter(t=>t.pot==="commuting"&&t.monthKey===mk).reduce((s,t)=>s+(t.direction==="in"?-1:1)*Number(t.value),0));
 const UNITS=[{key:"joint",label:"Joint",accounts:["Joint"]},{key:"hersh",label:"Hersh",accounts:["Hersh Debit","Hersh Credit"]},{key:"sonali",label:"Sonali",accounts:["Sonali Debit","Sonali Credit"]}];
 const DESTS=["Mortgage","Hersh S&S ISA","Sonali S&S ISA","Hersh Cash ISA","Sonali Cash ISA","Pension"];
 // "Pension" is Hersh's personal pension (Vanguard); workplace pensions are paid through payroll, never by transfer
@@ -380,7 +383,7 @@ function seedPlan(){
     P("p-h-spotify",{name:"Spotify",account:"Hersh Debit",amount:12.99,day:28}),
     P("p-h-mobile",{name:"Hersh mobile",account:"Hersh Debit",amount:10.50,day:21}),
     P("p-h-life",{name:"Hersh life cover",account:"Hersh Debit",amount:24.74,day:2}),
-    P("p-h-rail",{name:"Rail",account:"Hersh Debit",amount:327,basis:"estimate",day:"lwd",note:"Flat £327; actual entered at month-end"}),
+    P("p-h-rail",{name:"Commuting",account:"Hersh Debit",amount:327,basis:"estimate",day:"lwd",note:"Flat £327; calculated at month-end from Commuting transactions"}),
     P("p-h-nursery",{name:"Nursery (after Tax-Free Childcare)",account:"Hersh Debit",amount:621.52,start:"2027-01",note:"£776.90 less the 20% government top-up"}),
     P("p-h-overpay",{name:"Mortgage overpayment",account:"Hersh Debit",kind:"transfer",to:"Mortgage",amount:1770,day:3,start:"2027-02",end:"2027-06",note:"5 payments; this tax year's surplus"}),
     P("p-h-pension-lump",{name:"Personal pension top-up (cash)",account:"Hersh Debit",kind:"transfer",to:"Pension",amount:17020,day:15,basis:"estimate",freq:"oneoff",start:"2027-03",role:"pensionTopUp",manual:true,note:"Set by the payslip step; must land before 5 April"}),
@@ -509,8 +512,8 @@ function computeME(mid){
   // payments marked "not gone yet" at the previous month-end are expected in this one
   const prev=lastClose(mid);if(prev)Object.entries(prev.items||{}).forEach(([k,it])=>{if(it&&it.status==="notyet"&&!occ.some(o=>o.key===k)){const[id,omk]=k.split("@");const p=PLAN.find(x=>x.id===id);if(p)occ.push({p,mk:omk,date:prev.runDate,key:k,carried:true});}});
   const items=m.items||{};
-  const amtOf=o=>{const it=items[o.key];if(!it)return Number(o.p.amount);if(it.status==="missing"||it.status==="notyet")return 0;return it.amount!=null?Number(it.amount):Number(o.p.amount);};
-  const resolved=o=>{const it=items[o.key];if(!it)return false;if(o.p.basis==="estimate"&&it.status!=="missing"&&it.status!=="notyet")return it.amount!=null;return true;};
+  const amtOf=o=>{if(isLogged(o.p)&&items[o.key]?.amount==null)return 0;const it=items[o.key];if(!it)return Number(o.p.amount);if(it.status==="missing"||it.status==="notyet")return 0;return it.amount!=null?Number(it.amount):Number(o.p.amount);};
+  const resolved=o=>{if(isLogged(o.p)&&items[o.key]?.amount==null)return true;const it=items[o.key];if(!it)return false;if(o.p.basis==="estimate"&&it.status!=="missing"&&it.status!=="notyet")return it.amount!=null;return true;};
   const txs=TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=runDate);
   const units=UNITS.map(u=>{
     const opening=u.accounts.reduce((s,a)=>s+(Number(op.balances[a])||0),0);
@@ -539,8 +542,8 @@ function computeME(mid){
   occ.filter(o=>o.p.basis==="estimate"&&items[o.key]?.amount!=null).forEach(o=>{const a=Number(items[o.key].amount),e=Number(o.p.amount);if(e>0&&Math.abs(a-e)/e>0.15)flags.push({t:`${o.p.name}: actual ${money(a)} vs estimate ${money(e)}.`});});
   occ.filter(o=>items[o.key]?.status==="notyet").forEach(o=>flags.push({t:`${o.p.name} hasn't gone yet; it moves to next month's month-end.`}));
   occ.filter(o=>items[o.key]?.status==="override").forEach(o=>flags.push({t:`${o.p.name}: overridden to ${money(items[o.key].amount)}.`}));
-  const rail=occ.find(o=>o.p.id.startsWith("p-h-rail")||o.p.name==="Rail");
-  if(rail&&items[rail.key]?.amount>327)flags.push({t:`Rail ${money(items[rail.key].amount)} is above £327.`});
+  const rail=occ.find(o=>o.p.id.startsWith("p-h-rail")||o.p.name==="Rail"||o.p.name==="Commuting");
+  if(rail&&loggedAmt(rail.p,rail.mk)>327)flags.push({t:`Commuting ${money(loggedAmt(rail.p,rail.mk))} is above £327.`});
   if(pensionDue&&!m.pensionsUpdated)flags.push({t:"Pension balances are due (every 6 months)."});
   return{m,op,runDate,occ,items,amtOf,resolved,txs,units,mortgage,isas,pensionDue,unresolved,flags,float:fl,blockers:flags.filter(f=>f.bad).length};
 }
@@ -598,7 +601,7 @@ let showAllActions=false,potScope=store.get("v2.potScope","month");
 function ytdPot(k,mk){const fy=fyStart(mk);let b=0,sp=0;for(let m=fy;m<=mk;m=addMonths(m,1)){b+=monthBudget(k,m);sp+=potSpend(TX.filter(t=>t.monthKey===m),k);}return{b,sp};}
 function renderHome(){
   const mk=curMK(), t=todayISO();
-  const mid=currentMEId(), c=computeME(mid), lc=lastClose();
+  const mid=currentMEId(), lc=lastClose();
   const meDue=t>=addDays(addMonths(mid,1)+"-01",0);
   const todo=ACTIONS.filter(a=>a.status==="todo").sort((a,b)=>a.dueDate.localeCompare(b.dueDate));
   const shown=showAllActions?todo:todo.filter(a=>a.dueDate<=addDays(t,31));
@@ -614,8 +617,10 @@ function renderHome(){
   const fl=lc?float(lc.balances):float((OPENING||SEED_OPENING).balances);
   const flDate=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
   const _mid=currentMEId(),_op=openingFor(_mid),_items=(ME[_mid]||{}).items||{}; // payments that should have gone but are not yet ticked come first, so they can be ticked as you go
-  const upcoming=occurrences(_op.date,addDays(t,-1)).filter(o=>!_items[o.key]&&mkOf(o.date)===_mid).concat(occurrences(addDays(t,-1),addDays(t,14)));
-  const homeTick=o=>{if(mkOf(o.date)!==_mid||ME[_mid]?.status==="closed")return"";const it=_items[o.key];if(it)return it.status==="ticked"?` <span class="chip">Ticked</span>`:"";if(o.date>t)return"";return o.p.basis==="estimate"?` <span class="muted">· actual at month-end</span>`:` <button class="btn sm" data-hometick="${o.key}" data-mid="${_mid}" style="padding:2px 10px;min-height:26px;margin-left:4px;">Tick</button>`;};
+  const upcoming=occurrences(_op.date,addDays(t,-1)).filter(o=>!_items[o.key]&&!isLogged(o.p)&&mkOf(o.date)===_mid).concat(occurrences(addDays(t,-1),addDays(t,14)));
+  const homeTick=o=>{if(mkOf(o.date)!==_mid||ME[_mid]?.status==="closed")return"";const it=_items[o.key];if(isLogged(o.p))return` <span class="muted">· log under Commuting</span>`;
+    if(o.p.basis==="estimate")return it&&it.amount!=null?` <span class="chip">Actual ${money(it.amount)}</span>`:` <input type="number" step="0.01" inputmode="decimal" placeholder="Actual" data-homeact="${o.key}" data-mid="${_mid}" style="width:88px;padding:2px 6px;min-height:26px;margin-left:4px;">`;
+    if(it)return it.status==="ticked"?` <span class="chip">Ticked</span>`:"";return` <button class="btn sm" data-hometick="${o.key}" data-mid="${_mid}" style="padding:2px 10px;min-height:26px;margin-left:4px;">Tick</button>`;};
   $("v-home").innerHTML=`
   <div class="section"><div class="card">
     <div class="acc-h"><div class="eyebrow" style="margin:0;">Month-end · ${monthLabel(mid)}</div>${ME[mid]?.status==="open"?`<span class="chip warn">In progress</span>`:""}</div>
@@ -757,6 +762,7 @@ function renderFeed(){
   $("feed").innerHTML=Object.keys(days).sort().reverse().map(d=>`<div class="day"><div class="day-h"><span>${d===t0?"Today":d===y0?"Yesterday":dateLong(d)}</span><span class="num">${money(days[d].reduce((s,t)=>s+rowAmount(t).val,0),true)}</span></div><div class="rows">${days[d].map(rowHTML).join("")}</div></div>`).join("");
 }
 
+document.addEventListener("change",e=>{const i=e.target.closest("[data-homeact]");if(i&&i.value!==""){const v=parseFloat(i.value);if(isFinite(v))meItem(i.dataset.mid,i.dataset.homeact,{status:"actual",amount:v});}}); // enter an estimate's actual from Home
 document.addEventListener("click",e=>{const b=e.target.closest("[data-hometick]");if(b)meItem(b.dataset.mid,b.dataset.hometick,{status:"ticked",amount:null});}); // tick a regular payment from Home; Month-end shows it ticked and Override still works
 /* ================= LEDGER ================= */
 let feedSeg="feed",ledgerUnit="Joint";const LEDGER_ACCS=["Joint","Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit"];
@@ -770,7 +776,7 @@ function renderLedger(){ // one account unit, oldest first: opening balance, the
   TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=end).forEach(t=>{const v=r2(unit.accounts.reduce((s,a)=>s+txEffect(t,a),0));if(v)rows.push({date:t.date,o:0,title:t.retailer||"(no description)",chip:"Logged",cls:"",v});});
   const ST={exp:["Expected","grey"],conf:["Confirmed",""],ovr:["Confirmed, actual",""],miss:["Missing","warn"],notyet:["Not gone yet","grey"]};
   occ.forEach(o=>{if(!unit.accounts.some(a=>o.p.account===a||o.p.to===a))return;const it=items[o.key],st=!it?"exp":it.status==="ticked"?"conf":it.status==="override"?"ovr":it.status==="missing"?"miss":"notyet";
-    const amt=st==="miss"||st==="notyet"?0:(it&&it.amount!=null?Number(it.amount):Number(o.p.amount)),v=r2(unit.accounts.reduce((s,a)=>s+occEffect(o,amt,a),0));
+    const amt=isLogged(o.p)||st==="miss"||st==="notyet"?0:(it&&it.amount!=null?Number(it.amount):Number(o.p.amount)),v=r2(unit.accounts.reduce((s,a)=>s+occEffect(o,amt,a),0));
     if(!v&&st!=="miss"&&st!=="notyet")return;rows.push({date:(it&&it.date)||o.date,o:1,title:o.p.name,chip:ST[st][0],cls:ST[st][1],v,st});});
   rows.sort((a,b)=>a.date.localeCompare(b.date)||a.o-b.o||a.title.localeCompare(b.title));
   const pend=unit.accounts.reduce((s,a)=>s+pendingOf(op.pending,a),0);
@@ -883,7 +889,7 @@ async function healPlan(){
     await b.commit();logError("healPlan",`removed ${dups.reduce((s,[k,l])=>s+l.length-1,0)} duplicate plan version(s)`);
   }catch(err){logError("healPlan",err.message);
     // a stale local copy of a document that no longer exists on the server: drop it from view and try again once, instead of failing in a loop
-    const m=/plan_items\/([^\s\/]+)/.exec(err.message||"");
+    const m=/plan_items\/([^\s/]+)/.exec(err.message||"");
     if(m&&!GHOST.has(m[1])){GHOST.add(m[1]);PLAN=PLAN.filter(p=>p.id!==m[1]);retry=true;render();}
     else dups.forEach(([k])=>healSkip.add(k));
   }finally{healing=false;}
@@ -1033,7 +1039,7 @@ function forecast(fromOpening){
   for(let mk=mkOf(st.date);mk<=S.horizon;mk=addMonths(mk,1)){
     const end=lastDay(mk), first=mk===mkOf(st.date);if(!first)F=[];
     // regular payments and income
-    (occByMonth[mk]||[]).forEach(o=>{const p=o.p;let v=Number(p.amount);
+    (occByMonth[mk]||[]).forEach(o=>{const p=o.p;let v=Number(p.amount);if(!fromOpening&&isLogged(p))v=Math.max(0,v-loggedAmt(p,o.mk));
       if(ISAS.includes(p.account)){v=Math.min(v,isas[p.account]);isas[p.account]-=v;dest(p.to,v,p.account,p.name);return;}
       if(p.kind==="in")unitAdd(p.account,v,p.name);else{unitAdd(p.account,-v,p.name);if(p.kind==="transfer")dest(p.to,v,p.account,p.name);}
       if(p.role==="mortgage")mort-=v;});
@@ -1072,14 +1078,16 @@ function forecast(fromOpening){
 }
 let FC_CACHE=null,FC_KEY="";
 function liveForecast(){const k=[TX.length,PLAN.length,PLANNED.length,RULES.length,Object.keys(ME).length,closedList().length,JSON.stringify(PLAN.map(p=>[p.amount,p.start,p.end])).length,todayISO()].join("|");if(k!==FC_KEY||!FC_CACHE){FC_CACHE=forecast(false);FC_KEY=k;}return FC_CACHE;}
-async function ensureBaseline(){ // the 17 October plan, saved once so progress is measured against what was agreed
+let baselineFailed=false;
+async function ensureBaseline(){
+  if(baselineFailed)return; // the 17 October plan, saved once so progress is measured against what was agreed
   // only once every collection has loaded (v1 was saved too early, before the annual budgets arrived, so it is rebuilt once)
   if(!NEEDED.every(n=>LOADED.has(n))||!PLAN.length||!OPENING||BASELINE===null||BASELINE===undefined)return;
   if(BASELINE&&(BASELINE.v||1)>=BASELINE_V)return;
   if(BASELINE&&BASELINE.building)return;
   const f=forecast(true),rows={};f.rows.forEach(r=>rows[r.mk]={float:r.float,joint:r.joint,isaTot:r.isaTot,penTot:r.penTot,mort:r.mort,nw:r.nw,isas:r.isas});
   const prev=BASELINE;BASELINE={building:true};
-  try{await setDoc(doc(db,"v2meta","baseline"),{name:"17 October 2026 plan",v:BASELINE_V,createdAt:serverTimestamp(),horizon:S.horizon,rows,rebuiltFrom:prev?"v1 (saved before budgets loaded)":null});}catch(e){BASELINE=prev;}
+  try{await setDoc(doc(db,"v2meta","baseline"),{name:"17 October 2026 plan",v:BASELINE_V,createdAt:serverTimestamp(),horizon:S.horizon,rows,rebuiltFrom:prev?"v1 (saved before budgets loaded)":null});}catch(e){BASELINE=prev;baselineFailed=true;logError("baseline",e.message);}
 }
 function vsPlan(actual,plan,higherIsBetter=true){const d=r2(actual-plan),good=higherIsBetter?d>=0:d<=0,pct=plan?Math.abs(d)/Math.abs(plan):0;
   const chip=pct<0.01?`<span class="chip ok">On plan</span>`:good?`<span class="chip ok">Ahead ${money0(Math.abs(d))}</span>`:`<span class="chip warn">Behind ${money0(Math.abs(d))}</span>`;return{d,chip};}
@@ -1200,7 +1208,7 @@ function renderPlanForecast(){
 /* ================= MONTH-END ================= */
 let meOverride=null;
 async function meSave(mid,patch){try{await setDoc(doc(db,"month_ends",mid),{status:ME[mid]?.status==="closed"?"closed":"open",...patch,updatedAt:serverTimestamp()},{merge:true});}catch(err){fail(err);}}
-async function meItem(mid,key,val){await meSave(mid,{items:{[key]:val}});}
+async function meItem(mid,key,val){try{await meSave(mid,{items:{[key]:val}});}catch(err){fail(err);}}
 const PEOPLE=[{key:"hersh",label:"Hersh",field:"payslip",role:"hershPay",sac:true},{key:"sonali",label:"Sonali",field:"payslipS",role:"sonaliPay",sac:false}];
 function pensionPaid(who,ty){
   // tax year runs 6 April to 5 April; relief at source: cash paid is 80% of the gross contribution
@@ -1295,8 +1303,8 @@ function renderME(){
   const mid=currentMEId(), c=computeME(mid), m=c.m;
   const ok=t=>`<span class="chip ok">${t||"Done"}</span>`, todo=t=>`<span class="chip warn">${t}</span>`, info=t=>`<span class="chip grey">${t}</span>`;
   // step 1: regular payments, folded per account
-  const occRow=o=>{const it=c.items[o.key],est=o.p.basis==="estimate",st=it?.status,amtShown=it?.amount!=null?it.amount:o.p.amount;
-    const ctrl=est?`<div class="inline-in"><input type="number" step="0.01" inputmode="decimal" placeholder="Actual" data-meest="${o.key}" value="${it?.amount??""}"><button class="btn ghost sm${st==="notyet"?" on":""}" data-menotyet="${o.key}">Not gone yet</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`
+  const occRow=o=>{const it=c.items[o.key],est=o.p.basis==="estimate",st=it?.status,amtShown=isLogged(o.p)&&it?.amount==null?loggedAmt(o.p,o.mk):it?.amount!=null?it.amount:o.p.amount;
+    const ctrl=isLogged(o.p)&&it?.amount==null?`<div class="small muted">Calculated from your logged Commuting transactions (${TX.filter(t=>t.pot==="commuting"&&t.monthKey===o.mk).length}). Nothing to enter.</div>`:est?`<div class="inline-in"><input type="number" step="0.01" inputmode="decimal" placeholder="Actual" data-meest="${o.key}" value="${it?.amount??""}"><button class="btn ghost sm${st==="notyet"?" on":""}" data-menotyet="${o.key}">Not gone yet</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`
       :`<div class="row-btns" style="margin-top:0;"><button class="btn sm${st==="ticked"?" on":""}" data-metick="${o.key}">${st==="ticked"?"Ticked":"Tick"}</button><button class="btn ghost sm${st==="override"?" on":""}" data-meovr="${o.key}">Override</button><button class="btn ghost sm${st==="notyet"?" on":""}" data-menotyet="${o.key}">Not gone yet</button><button class="btn ghost sm${st==="missing"?" on":""}" data-memiss="${o.key}">Missing</button></div>`;
     return`<div class="li" style="display:block;"><div style="display:flex;justify-content:space-between;gap:10px;"><div style="min-width:0;"><div class="t">${esc(o.p.name)}</div><div class="d">${dateShort(o.date)}${o.p.kind==="transfer"?" · to "+esc(accLabel(o.p.to)):""}${est?` · estimate ${money(o.p.amount)}`:""}</div></div><div class="r num" style="font-weight:600;${o.p.kind==="in"?"color:var(--teal-dark)":""}">${st==="missing"||st==="notyet"?"£0.00":(o.p.kind==="in"?"+":"")+money(amtShown)}</div></div>${o.carried?`<div class="d"><span class="chip warn">Carried from last month</span></div>`:st==="notyet"?`<div class="d">Moves to next month's month-end</div>`:""}
       <div style="margin-top:8px;">${ctrl}</div>
