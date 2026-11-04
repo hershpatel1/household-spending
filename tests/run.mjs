@@ -47,7 +47,7 @@ await scenario('Seed and Home', '2026-10-17T21:30:00', async ({ page, store }) =
   check('Home shows the set-up card', (await page.textContent('#v-home')).includes('opening balances'));
 });
 
-await scenario('Log a spend and a transfer; card repayments refused', '2026-10-20T12:00:00', async ({ page, store, go }) => {
+await scenario('Log a spend and a transfer', '2026-10-20T12:00:00', async ({ page, store, go }) => {
   await go('log'); await page.fill('#fValue', '12.34'); await page.fill('#fRetailer', 'Waitrose'); await page.click('#submitBtn'); await page.waitForTimeout(100);
   await page.click('#typeSeg button[data-t=transfer]'); await page.selectOption('#fAccount', 'Hersh Debit');
   const toOpts = await page.$$eval('#fTo option', o => o.filter(x => !x.hidden).map(x => x.value));
@@ -339,6 +339,17 @@ await scenario('Home: estimates take an actual; Commuting is calculated from Com
   await page.reload(); await page.waitForTimeout(800); await go('me'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(300);
   const me = await page.locator('#v-me').innerText();
   check('Month-end Commuting is calculated from Commuting transactions (111.11), with no actual box', /Calculated from your logged Commuting/.test(me) && /111\.11/.test(me) && (await page.locator('[data-meest*="p-h-rail"]').count()) === 0);
+});
+
+await scenario('Card repayment: a transfer from a current account to the same person\'s card can be logged and nets out', '2026-10-28T10:00:00', async ({ page, go, store }) => {
+  await go('log'); await page.click('#typeSeg button[data-t=transfer]'); await page.selectOption('#fAccount', 'Hersh Debit'); await page.selectOption('#fTo', 'Hersh Credit');
+  await page.fill('#fValue', '500'); await page.fill('#fRetailer', 'Card repayment'); await page.click('#submitBtn'); await page.waitForTimeout(300);
+  const s = await store(); const tx = Object.values(s.transactions).find(t => t.retailer === 'Card repayment');
+  check('the repayment is saved as a transfer from Hersh Debit to Hersh Credit', !!tx && tx.type === 'transfer' && tx.account === 'Hersh Debit' && tx.toAccount === 'Hersh Credit' && tx.value === 500, JSON.stringify(tx));
+  await go('feed'); await page.click('[data-fs=ledger]'); await page.click('[data-lu="Hersh Debit"]'); await page.waitForTimeout(150);
+  const d = await page.$$eval('#ledger .lrow', els => els.map(e => +e.dataset.v)); await page.click('[data-lu="Hersh Credit"]'); await page.waitForTimeout(150);
+  const c = await page.$$eval('#ledger .lrow', els => els.map(e => +e.dataset.v));
+  check('it shows as -500 on the current account ledger and +500 on the card ledger', d.includes(-500) && c.includes(500), JSON.stringify([d, c]));
 });
 
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
