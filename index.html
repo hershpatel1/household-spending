@@ -164,10 +164,13 @@ details.fold.inner>.fb{padding:0 12px 10px;}
         <button type="button" data-t="refund">Refund</button>
         <button type="button" data-t="income">Income</button>
         <button type="button" data-t="transfer">Transfer</button>
+        <button type="button" data-t="payslip">Payslip</button>
       </div>
       <form id="logForm" class="form-grid">
         <label class="f">Date<input type="date" id="fDate" required></label>
-        <label class="f">Amount (£)<input type="number" id="fValue" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" required></label>
+        <label class="f"><span id="amtLabel">Amount (£)</span><input type="number" id="fValue" min="0.01" step="0.01" inputmode="decimal" placeholder="0.00" required></label>
+        <label class="f g-payslip hidden">Taxable pay to date (£)<input type="number" id="fPsYtd" step="0.01" inputmode="decimal" placeholder="This tax year, from the payslip"></label>
+        <label class="f g-payslip hidden">Taxable pay this period (£)<input type="number" id="fPsPer" step="0.01" inputmode="decimal" placeholder="This payslip"></label>
         <label class="f g-spend">Budget<select id="fPot"></select></label>
         <label class="f g-spend">Category<select id="fCategory"></select></label>
         <label class="f"><span id="accLabel">Account</span><select id="fAccount"></select></label>
@@ -248,7 +251,13 @@ const S={floor:10000,personTarget:5000,aniTarget:99000,mortgageRate:0.0384,sacSt
   // workplace pensions: gross monthly = salary/12 x (employer + employee sacrifice)
   workplace:[{pot:"Hersh CIP workplace",salary:115000,er:0.06,ee:0.03,eeFrom:"2026-12",from:"2026-10"},{pot:"Sonali Imagination workplace",salary:86000,er:0.05,ee:0.05,eeFrom:"2027-01",from:"2027-01",note:"Employer share assumed 5% until the offer letter"}],
   rebalanceMonths:[1,4,7,10]};
-const SEED_VERSION=4;
+const SEED_VERSION=5;
+const JOINT_BUFFER=1000;
+function jointSpare(){ // Joint's true low each month is just before the 30th standing orders land; spare cash = the lowest of those over 12 months, less the buffer
+  const rows=liveForecast().rows.filter(r=>r.mk>=curMK()).slice(0,12);if(!rows.length)return null;
+  const low=r=>r.joint-(r.flows||[]).filter(x=>x.u==="joint"&&x.v>0&&/^Standing order to Joint/.test(x.name)).reduce((t,x)=>t+x.v,0);
+  const m=rows.reduce((a,r)=>low(r)<low(a)?r:a);return{low:low(m),mk:m.mk,spare:Math.max(0,Math.floor(low(m)-JOINT_BUFFER))};
+}
 
 /* ================= helpers ================= */
 const $=id=>document.getElementById(id), $$=s=>document.querySelectorAll(s);
@@ -431,6 +440,11 @@ async function ensureSeed(){
   const ref=doc(db,"v2meta","seed"), snap=await getDoc(ref);
   if(snap.exists()&&(snap.data().version||0)>=SEED_VERSION)return;
   const b=writeBatch(db), ts=serverTimestamp();
+  if(snap.exists()&&(snap.data().version||0)===4){ // v5: the Rail plan line is now called Commuting
+    const r=await getDoc(doc(db,"plan_items","p-h-rail"));
+    if(r.exists()&&r.data().name==="Rail")b.set(doc(db,"plan_items","p-h-rail"),{name:"Commuting",note:"Flat £327; calculated at month-end from Commuting transactions",updatedAt:ts},{merge:true});
+    b.set(ref,{version:SEED_VERSION,at:ts});await b.commit();return;
+  }
   if(snap.exists()&&(snap.data().version||0)===3){
     b.set(doc(db,"v2meta","opening"),{asAt:"2026-10-16",balances:{"Joint":4125.10,"Hersh Debit":22612.12},note:SEED_OPENING.note,setup:true},{merge:true});
     b.set(doc(db,"transactions","seed-tx-wallart"),{value:207.39,type:"spend",direction:"out",pot:"householdInvestment",category:"Furnishings & Furniture",toAccount:null,preOpening:false,updatedAt:ts},{merge:true});
@@ -589,8 +603,7 @@ async function exportEverything(){
 document.addEventListener("click",e=>{if(e.target.closest("[data-export]"))exportEverything();});
 function openPotCard(fy){
   const mk=curMK(),fyTx=TX.filter(x=>fyStart(x.monthKey)===fy),spentFY=potSpend(fyTx,"householdInvestment"),spentM=potSpend(TX.filter(x=>x.monthKey===mk),"householdInvestment");
-  const lc=lastClose(),j=lc?lc.balances?.Joint:(OPENING||SEED_OPENING).balances.Joint,jd=lc?lc.runDate:(OPENING||SEED_OPENING).asAt;
-  const dr=fyDrill("householdInvestment",fy);return`<div class="card pot"${drillAttr(dr)}><div class="name">Household Investment <span class="small muted" style="font-weight:400;">no limit, paid from Joint's spare cash</span>${drillHint(dr)}</div><div class="amt"><span class="spent">${money(spentFY)}</span><span class="of">spent in ${fyLabel(fy)}</span></div><div class="rem">${money(spentM)} this month · Joint was ${money(j)} at ${dateShort(jd)}</div></div>`;
+  const dr=fyDrill("householdInvestment",fy),sp=jointSpare();return`<div class="card pot"${drillAttr(dr)}><div class="name">Household Investment <span class="small muted" style="font-weight:400;">no limit, paid from Joint's spare cash</span>${drillHint(dr)}</div><div class="amt"><span class="spent">${money(spentFY)}</span><span class="of">spent in ${fyLabel(fy)}</span></div><div class="rem">${money(spentM)} this month${sp?` · <b>Spare cash ${money(sp.spare)}</b> <span class="muted">(Joint's lowest point in the next 12 months is ${money(sp.low)} in ${shortMonth(sp.mk)}, less a ${money(JOINT_BUFFER)} buffer)</span>`:""}</div></div>`;
 }
 function actionRow(a){
   const overdue=a.status==="todo"&&a.dueDate<todayISO();
@@ -661,16 +674,17 @@ document.addEventListener("click",async e=>{
 /* ================= LOG ================= */
 let logType="spend",editingId=null;
 $("fPot").innerHTML=opts(POTS);$("fCategory").innerHTML=opts(CATEGORIES);$("fAccount").innerHTML=opts(ACCOUNTS);$("fTo").innerHTML=opts(BANK.concat(["Cash"]).concat(DESTS).map(k=>({key:k,label:accLabel(k)})));
-function syncTo(){const f=$("fAccount").value,u=unitOf(f),isa=ISAS.includes(f);[...$("fTo").options].forEach(o=>o.hidden=isa?(!ISAS.includes(o.value)||o.value===f):o.value===f);if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
+function syncTo(){const f=$("fAccount").value,isa=ISAS.includes(f);[...$("fTo").options].forEach(o=>o.hidden=isa?(!ISAS.includes(o.value)||o.value===f):o.value===f);if($("fTo").selectedOptions[0]?.hidden)$("fTo").value=[...$("fTo").options].find(o=>!o.hidden).value;}
 $("fAccount").addEventListener("change",syncTo);
 $("fPot").addEventListener("change",()=>{if($("fPot").value==="householdInvestment"){$("fAccount").value="Joint";syncTo();}});$("fPaidBy").innerHTML=opts(PAID_BY);$("fDate").value=todayISO();
-const HELP={spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"Only for one-off moves that aren't in Plan: between Hersh, Sonali and Joint, an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test), or an ISA transfer such as fixed cash to S&S (from one ISA to another, so growth isn't miscounted). A card repayment (current account to your own card) can be logged here if you want each account's Ledger to match your bank app; it nets out at month-end either way."};
+const HELP={payslip:"Not a transaction: enter the payslip once and Month-end has it waiting (net pay fills the pay line; taxable pay feeds the £99,000 test). Pick the account the pay lands in.",spend:"Money spent from a budget.",refund:"Money back into a budget; it reduces that budget's spend.",income:"Money in that isn't pay or a refund: a bonus, cashback, interest, a gift. Pay is handled at month-end.",transfer:"Only for one-off moves that aren't in Plan: between Hersh, Sonali and Joint, an early payment into a personal pension (choose Pension; the payslip step counts it towards the £99,000 test), or an ISA transfer such as fixed cash to S&S (from one ISA to another, so growth isn't miscounted). A card repayment (current account to your own card) can be logged here if you want each account's Ledger to match your bank app; it nets out at month-end either way."};
 function setType(t){
-  const cur=$("fAccount").value;$("fAccount").innerHTML=opts(t==="transfer"?BANK.concat(ISAS):ACCOUNTS);$("fAccount").value=[...$("fAccount").options].some(o=>o.value===cur)?cur:"Hersh Debit";
+  const cur=$("fAccount").value;$("fAccount").innerHTML=opts(t==="transfer"?BANK.concat(ISAS):t==="payslip"?["Hersh Debit","Sonali Debit"]:ACCOUNTS);$("fAccount").value=[...$("fAccount").options].some(o=>o.value===cur)?cur:"Hersh Debit";
   logType=t;$$("#typeSeg button").forEach(b=>b.classList.toggle("on",b.dataset.t===t));
   const sp=t==="spend"||t==="refund";
   $$(".g-spend").forEach(el=>el.classList.toggle("hidden",!sp));$$(".g-transfer").forEach(el=>el.classList.toggle("hidden",t!=="transfer"));$$(".g-income").forEach(el=>el.classList.toggle("hidden",t!=="income"));
-  $("accLabel").textContent=t==="transfer"?"From account":t==="income"?"Into account":"Account";
+  $$(".g-payslip").forEach(el=>el.classList.toggle("hidden",t!=="payslip"));$("amtLabel").textContent=t==="payslip"?"Net pay received (£)":"Amount (£)";$("fRetailer").required=t!=="payslip";$("fRetailer").closest("label").classList.toggle("hidden",t==="payslip");
+  $("accLabel").textContent=t==="transfer"?"From account":t==="income"?"Into account":t==="payslip"?"Pay lands in":"Account";
   $("retLabel").textContent=sp?"Retailer":"Description";
   $("fRetailer").placeholder=sp?"e.g. Tesco":t==="transfer"?"e.g. Joint paying Hersh back":"e.g. Bonus";
   if(t==="transfer")syncTo();
@@ -683,6 +697,7 @@ $("logForm").addEventListener("submit",async e=>{
   const date=$("fDate").value,value=parseFloat($("fValue").value),account=$("fAccount").value;
   if(!(value>0))return setStatus("Enter an amount above zero",true);
   const lk=lockedMsg(date)||(editingId?lockedMsg(TX.find(x=>x.id===editingId)?.date):null);if(lk)return setStatus(lk,true);
+  if(logType==="payslip")return savePayslip(date,value,account);
   const base={date,monthKey:mkOf(date),value,account,retailer:$("fRetailer").value.trim(),updatedAt:serverTimestamp()};
   let p;
   if(logType==="spend"||logType==="refund")p={...base,type:"spend",direction:logType==="spend"?"out":"in",pot:$("fPot").value,category:$("fCategory").value,paidBy:$("fPaidBy").value,toAccount:null,bonus:false};
@@ -692,6 +707,11 @@ $("logForm").addEventListener("submit",async e=>{
   try{if(editingId)await updateDoc(doc(db,"transactions",editingId),p);else await addDoc(collection(db,"transactions"),{...p,createdAt:serverTimestamp()});setStatus((editingId?"Saved ":"Added ")+money(value)+" · "+p.retailer);resetLog();}catch(err){fail(err);}
 });
 $("cancelEdit").addEventListener("click",resetLog);
+async function savePayslip(date,net,account){ // a payslip is a record, not a transaction: Month-end reads it (the pay line takes the net pay, the £99,000 test takes the taxable pay)
+  const who=PEOPLE.find(w=>account.startsWith(w.label)),ytd=parseFloat($("fPsYtd").value),per=parseFloat($("fPsPer").value),mid=mkOf(date);
+  if(!isFinite(ytd)||!isFinite(per))return setStatus("Enter taxable pay to date and for this period",true);
+  try{await meSave(mid,{[who.field]:{ytd,period:per,net}});$("fValue").value="";$("fPsYtd").value="";$("fPsPer").value="";setStatus(`${who.label}'s ${shortMonth(mid)} payslip saved; it will be waiting at month-end`);}catch(err){fail(err);}
+}
 function resetLog(){editingId=null;const a=$("fAccount").value,pb=$("fPaidBy").value;$("logForm").reset();$("fDate").value=todayISO();$("fAccount").value=a;$("fPaidBy").value=pb;$("submitBtn").textContent="Add";$("cancelEdit").classList.add("hidden");$("logLabel").textContent="Log a transaction";setType(logType);}
 function startEdit(id){
   const t=TX.find(x=>x.id===id);if(!t)return;const lk=lockedMsg(t.date);if(lk)return setStatus(lk,true);go("log");editingId=id;
@@ -768,26 +788,29 @@ document.addEventListener("click",e=>{const b=e.target.closest("[data-hometick]"
 let feedSeg="feed",ledgerUnit="Joint";const LEDGER_ACCS=["Joint","Hersh Debit","Hersh Credit","Sonali Debit","Sonali Credit"];
 $$("#feedSeg button").forEach(b=>b.addEventListener("click",()=>{feedSeg=b.dataset.fs;$$("#feedSeg button").forEach(x=>x.classList.toggle("on",x===b));renderFeed();$("ledgerToday")?.scrollIntoView({block:"center"});}));
 document.addEventListener("click",e=>{const u=e.target.closest("[data-lu]");if(u){ledgerUnit=u.dataset.lu;renderLedger();}});
-function renderLedger(){ // one account unit, oldest first: opening balance, then logged transactions and regular payments (confirmed, or expected until confirmed), with a running total
-  const acc1=LEDGER_ACCS.includes(ledgerUnit)?ledgerUnit:"Joint",unit={key:acc1,accounts:[acc1]},mid=currentMEId(),op=openingFor(mid),today=todayISO(),end=addDays(today,45)>op.date?addDays(today,45):op.date;
+function ledgerCalc(acc,endArg,midArg){ // one account, oldest first: opening balance, logged transactions and regular payments (confirmed, or expected until confirmed), each with a running total
+  const mid=midArg||currentMEId(),op=openingFor(mid),today=todayISO(),end=endArg||(addDays(today,45)>op.date?addDays(today,45):op.date);
   const items=(ME[mid]||{}).items||{},occ=occurrences(op.date,end),prev=lastClose(mid);
   if(prev)Object.entries(prev.items||{}).forEach(([k,it])=>{if(it&&it.status==="notyet"&&!occ.some(o=>o.key===k)){const[id,omk]=k.split("@"),p=PLAN.find(x=>x.id===id);if(p)occ.push({p,mk:omk,date:op.date,key:k});}});
   const rows=[];
-  TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=end).forEach(t=>{const v=r2(unit.accounts.reduce((s,a)=>s+txEffect(t,a),0));if(v)rows.push({date:t.date,o:0,title:t.retailer||"(no description)",chip:"Logged",cls:"",v});});
+  TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=end).forEach(t=>{const v=r2(txEffect(t,acc));if(v)rows.push({date:t.date,o:0,title:t.retailer||"(no description)",chip:"Logged",cls:"",v});});
   const ST={exp:["Expected","grey"],conf:["Confirmed",""],ovr:["Confirmed, actual",""],miss:["Missing","warn"],notyet:["Not gone yet","grey"]};
-  occ.forEach(o=>{if(!unit.accounts.some(a=>o.p.account===a||o.p.to===a))return;const it=items[o.key],st=!it?"exp":it.status==="ticked"?"conf":it.status==="override"?"ovr":it.status==="missing"?"miss":"notyet";
-    const amt=isLogged(o.p)||st==="miss"||st==="notyet"?0:(it&&it.amount!=null?Number(it.amount):Number(o.p.amount)),v=r2(unit.accounts.reduce((s,a)=>s+occEffect(o,amt,a),0));
+  occ.forEach(o=>{if(o.p.account!==acc&&o.p.to!==acc)return;const it=items[o.key],st=!it?"exp":it.status==="ticked"?"conf":it.status==="override"?"ovr":it.status==="missing"?"miss":"notyet";
+    const amt=isLogged(o.p)||st==="miss"||st==="notyet"?0:(it&&it.amount!=null?Number(it.amount):Number(o.p.amount)),v=r2(occEffect(o,amt,acc));
     if(!v&&st!=="miss"&&st!=="notyet")return;rows.push({date:(it&&it.date)||o.date,o:1,title:o.p.name,chip:ST[st][0],cls:ST[st][1],v,st});});
   rows.sort((a,b)=>a.date.localeCompare(b.date)||a.o-b.o||a.title.localeCompare(b.title));
-  const pend=unit.accounts.reduce((s,a)=>s+pendingOf(op.pending,a),0);
-  let run=r2(unit.accounts.reduce((s,a)=>s+(Number(op.balances[a])||0),0)),shownToday=false;
-  const line=(title,date,v,run,chip,cls,extra,dv)=>`<div class="row lrow" data-v="${v}" data-run="${run}"${extra||""} style="padding:10px 12px;${cls==="grey"?"opacity:.7;":""}"><div class="row-top"><span class="row-title"${dv==="miss"?' style="text-decoration:line-through;"':""}>${esc(title)}</span><span class="row-amt num ${v>0?"in":""}">${v?money(v,true):"-"}</span></div><div class="row-meta"><span class="chip ${cls}">${chip}</span><span>${dateShort(date)}</span><span class="num" style="margin-left:auto;font-weight:600;">${money(run)}</span></div></div>`;
+  const pend=pendingOf(op.pending,acc),open=r2(Number(op.balances[acc])||0);let run=r2(open+pend);rows.forEach(r=>{run=r2(run+r.v);r.run=run;});
+  return{op,today,end,rows,pend,open,run};
+}
+function renderLedger(){
+  const acc1=LEDGER_ACCS.includes(ledgerUnit)?ledgerUnit:"Joint",{op,today,end,rows,pend,open,run}=ledgerCalc(acc1);let shownToday=false;
+  const line=(title,date,v,rn,chip,cls,extra,dv)=>`<div class="row lrow" data-v="${v}" data-run="${rn}"${extra||""} style="padding:10px 12px;${cls==="grey"?"opacity:.7;":""}"><div class="row-top"><span class="row-title"${dv==="miss"?' style="text-decoration:line-through;"':""}>${esc(title)}</span><span class="row-amt num ${v>0?"in":""}">${v?money(v,true):"-"}</span></div><div class="row-meta"><span class="chip ${cls}">${chip}</span><span>${dateShort(date)}</span><span class="num" style="margin-left:auto;font-weight:600;">${money(rn)}</span></div></div>`;
   let h=`<div class="seg" style="margin-bottom:10px;flex-wrap:wrap;">${LEDGER_ACCS.map(a=>`<button data-lu="${a}" class="${a===acc1?"on":""}">${a}</button>`).join("")}</div>`;
-  h+=`<div class="rows">`+line("Opening balance",op.date,0,run,"Opening","grey"," data-open=\"1\"");
-  if(pend){run=r2(run+pend);h+=line("Pending at opening",op.date,pend,run,"Pending","grey");}
-  rows.forEach(r=>{if(!shownToday&&r.date>today){shownToday=true;h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;}run=r2(run+r.v);h+=line(r.title,r.date,r.v,run,r.chip,r.cls,"",r.st);});
+  h+=`<div class="rows">`+line("Opening balance",op.date,0,open,"Opening","grey"," data-open=\"1\"");
+  if(pend)h+=line("Pending at opening",op.date,pend,r2(open+pend),"Pending","grey");
+  rows.forEach(r=>{if(!shownToday&&r.date>today){shownToday=true;h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;}h+=line(r.title,r.date,r.v,r.run,r.chip,r.cls,"",r.st);});
   if(!shownToday)h+=`<div id="ledgerToday" class="note small" style="text-align:center;margin:6px 0;">Today, ${dateShort(today)}</div>`;
-  h+=`</div><div class="summary"><span>Expected balance to ${dateShort(end)}</span><span class="num">${money(run)}</span></div><div class="note small">${acc1.includes("Credit")?"Card repayments from the current account are not logged, so this balance only moves with spends and regular payments on the card. ":""}Running total = opening balance + logged transactions + regular payments (confirmed, or expected until you confirm them at month-end). Pending items are shown at the top.</div>`;
+  h+=`</div><div class="summary"><span>Expected balance to ${dateShort(end)}</span><span class="num">${money(run)}</span></div><div class="note small">${acc1.includes("Credit")?"Log card repayments as a transfer from the current account so this balance matches your card app. ":""}Running total = opening balance + logged transactions + regular payments (confirmed, or expected until you confirm them at month-end). Pending items are shown at the top.</div>`;
   $("ledger").innerHTML=h;
 }
 
@@ -900,7 +923,7 @@ document.addEventListener("submit",async e=>{
   const d=Object.fromEntries(new FormData(f).entries()),mode=f.dataset.pform,p=PLAN.find(x=>x.id===f.dataset.id);
   const day=d.day==="lwd"?"lwd":(parseInt(d.day)||null);
   try{
-    if(mode==="end"){await updateDoc(doc(db,"plan_items",p.id),{end:d.last,updatedAt:serverTimestamp()});}
+    if(mode==="end"){if(p.start&&d.last<p.start){await deleteDoc(doc(db,"plan_items",p.id));setStatus("Cancelled before it started");}else await updateDoc(doc(db,"plan_items",p.id),{end:d.last,updatedAt:serverTimestamp()});}
     else if(mode==="change"){const ch={name:d.name.trim(),amount:parseFloat(d.amount)||0,day,basis:d.basis,note:d.note.trim()};
       if(d.months!==undefined){const ms=[...new Set(d.months.split(/[ ,]+/).map(Number).filter(x=>x>=1&&x<=12))];if(!ms.length)return setStatus("Enter the month(s), e.g. 10",true);ch.months=ms;}
       if(d.fix){const b=writeBatch(db);seriesOf(p).forEach(x=>{const lk=lockedTo();if(lk&&x.end&&x.end<=mkOf(lk))return;b.update(doc(db,"plan_items",x.id),x.id===p.id?{...ch,updatedAt:serverTimestamp()}:{name:ch.name,day,basis:ch.basis,...(ch.months?{months:ch.months}:{}),updatedAt:serverTimestamp()});});await b.commit();}
@@ -1337,7 +1360,8 @@ function renderME(){
     ${u.gap==null?"":u.gap===0?`<div class="gap ok"><span>Ties out</span><span class="num">£0.00</span></div>`:`<div class="gap bad"><span>Gap: log what's missing</span><span class="num">${money(u.gap,true)}</span></div>`}
     <div class="actions-row"><button class="btn ghost sm" data-feedunit="${u.key}">See logged transactions</button></div>`,true);};
   const uLeft=c.units.filter(u=>u.gap!==0).length;
-  const step3=fold(`me-${mid}-s3`,"3. Current accounts","Balances as the bank app shows them; each must be £0.00 out",uLeft?todo(uLeft+" to tie out"):ok(),firstStep===3,c.units.map(unit).join(""));
+  const fillBtn=`<div class="actions-row"><button class="btn ghost sm" id="meFillLedger">Fill balances from the ledger</button></div><div class="note small">These are the ledger's figures, not your bank's. Check them against your banking apps before you close, otherwise a tie-out only proves the ledger adds up.</div>`;
+  const step3=fold(`me-${mid}-s3`,"3. Current accounts","Balances as the bank app shows them; each must be £0.00 out",uLeft?todo(uLeft+" to tie out"):ok(),firstStep===3,fillBtn+c.units.map(unit).join(""));
   // step 4: mortgage, ISAs, pensions (record only)
   const step4=fold(`me-${mid}-s4`,`4. Mortgage, ISAs${c.pensionDue?" and pensions":""}`,"Record balances; growth and interest are worked out",
     (c.mortgage.close!=null&&c.isas.every(i=>i.close!=null))?ok():info("Optional"),false,
@@ -1380,6 +1404,7 @@ function wireME(mid,c){
     const after=TX.filter(t=>t.date>c.runDate&&t.date<=todayISO()).reduce((s,t)=>s+txEffect(t,a),0)+occurrences(c.runDate,todayISO()).reduce((s,o)=>s+occEffect(o,Number(o.p.amount),a),0);
     meSave(mid,{runDate:c.runDate,balances:{[a]:r2(x-after)}});setStatus(`${a}: ${money(Math.abs(r2(x-after)))} at ${dateShort(c.runDate)}, worked back from today`);}));
   $$("[data-mebal]").forEach(i=>i.addEventListener("change",()=>{const a=i.dataset.mebal;let v=num(i.value);if(v!=null&&CARDS.includes(a))v=-Math.abs(v);meSave(mid,{runDate:c.runDate,balances:{[a]:v}});}));
+  $("meFillLedger")?.addEventListener("click",()=>{const bal={};c.units.forEach(u=>u.accounts.forEach(a=>{bal[a]=ledgerCalc(a,c.runDate,mid).run;}));meSave(mid,{runDate:c.runDate,balances:bal});});
   $$("[data-meps]").forEach(i=>i.addEventListener("change",()=>{const k=i.dataset.meps,who=PEOPLE.find(w=>w.key===i.dataset.who);const patch={runDate:c.runDate,[who.field]:{[k]:num(i.value)}};
     if(k==="net"){const o=c.occ.find(x=>x.p.role===who.role);if(o)patch.items={[o.key]:{status:"actual",amount:num(i.value)}};}
     meSave(mid,patch);}));
