@@ -352,5 +352,35 @@ await scenario('Card repayment: a transfer from a current account to the same pe
   check('it shows as -500 on the current account ledger and +500 on the card ledger', d.includes(-500) && c.includes(500), JSON.stringify([d, c]));
 });
 
+await scenario('Spare cash, Commuting rename, End on a line not yet started, Payslip log, balances from ledger', '2026-10-31T12:00:00', async ({ page, go, store }) => {
+  await go('home'); await page.waitForTimeout(200);
+  const hi = await page.locator('.card.pot', { hasText: 'Household Investment' }).first().innerText();
+  check('Household Investment card shows spare cash and no longer the Joint balance line', /Spare cash/.test(hi) && !/Joint was/.test(hi), hi.replace(/\n/g, ' | ').slice(0, 200));
+  // Rail -> Commuting for existing data (seed v5)
+  await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.v2meta.seed = { version: 4 }; m.plan_items['p-h-rail'] = { ...(m.plan_items['p-h-rail'] || {}), name: 'Rail', account: 'Hersh Debit', amount: 327, start: '2026-10', end: '', freq: 'monthly', kind: 'out', basis: 'estimate', day: 'lwd', months: [], status: 'confirmed', series: 'p-h-rail' }; localStorage.setItem('__mock', JSON.stringify(m)); });
+  await page.reload(); await page.waitForTimeout(1200);
+  let s = await store(); check('existing Rail line is renamed Commuting and the seed moves to v5', s.plan_items['p-h-rail'].name === 'Commuting' && s.v2meta.seed.version === 5, JSON.stringify([s.plan_items['p-h-rail'].name, s.v2meta.seed]));
+  // End on a line that has not started cancels it
+  await go('plan'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true));
+  const shown = await page.$$eval('[data-plan]', els => els.map(e => e.dataset.plan));
+  const fut = Object.entries(s.plan_items).find(([id, p]) => shown.includes(id) && p.freq === 'monthly' && p.start > '2026-12' && !p.end);
+  if (fut) {
+    await page.click(`[data-plan="${fut[0]}"]`); await page.click(`[data-plan="${fut[0]}"] [data-pm=end]`); await page.waitForTimeout(100);
+    await page.fill('[data-pform=end] input[name=last]', '2026-11'); await page.click('[data-pform=end] button[type=submit]'); await page.waitForTimeout(250);
+    s = await store(); check('ending a line before it starts removes it instead of leaving end before start', !s.plan_items[fut[0]], fut[0]);
+  } else check('(no not-yet-started monthly line in the test data)', true);
+  // Payslip as a log type
+  await go('log'); await page.click('#typeSeg button[data-t=payslip]'); await page.selectOption('#fAccount', 'Hersh Debit');
+  await page.fill('#fDate', '2026-10-30'); await page.fill('#fValue', '6440'); await page.fill('#fPsYtd', '70000'); await page.fill('#fPsPer', '8000'); await page.click('#submitBtn'); await page.waitForTimeout(300);
+  s = await store(); const ps = (s.month_ends['2026-10'] || {}).payslip;
+  check('a payslip is saved for month-end and creates no transaction', !!ps && ps.ytd === 70000 && ps.period === 8000 && ps.net === 6440 && !Object.values(s.transactions).some(t => t.value === 6440), JSON.stringify(ps));
+  // balances from the ledger
+  await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.v2meta.opening.setup = false; localStorage.setItem('__mock', JSON.stringify(m)); });
+  await page.reload(); await page.waitForTimeout(800); await go('me'); await page.evaluate(() => document.querySelectorAll('details').forEach(d => d.open = true)); await page.waitForTimeout(300);
+  await page.click('#meFillLedger'); await page.waitForTimeout(400);
+  s = await store(); const bal = (s.month_ends['2026-10'] || {}).balances || {};
+  check('Fill from ledger saves a balance for every account', ['Joint', 'Hersh Debit', 'Hersh Credit', 'Sonali Debit', 'Sonali Credit'].every(a => typeof bal[a] === 'number'), JSON.stringify(bal));
+});
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
