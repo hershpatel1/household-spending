@@ -382,5 +382,17 @@ await scenario('Spare cash, Commuting rename, End on a line not yet started, Pay
   check('Fill from ledger saves a balance for every account', ['Joint', 'Hersh Debit', 'Hersh Credit', 'Sonali Debit', 'Sonali Credit'].every(a => typeof bal[a] === 'number'), JSON.stringify(bal));
 });
 
+await scenario('Future regular payments get a set-up action straight away', '2026-11-09T10:00:00', async ({ page, go, store }) => {
+  await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.plan_items['p-test-dd'] = { name: 'Test overpayment', kind: 'transfer', to: 'Mortgage', account: 'Hersh Debit', amount: 1770, start: '2027-02', end: '2027-06', freq: 'monthly', day: 3, basis: 'fixed', months: [], status: 'confirmed', series: 'p-test-dd', note: '', createdAt: { seconds: 5 } }; localStorage.setItem('__mock', JSON.stringify(m)); });
+  await page.reload(); await page.waitForTimeout(1200);
+  const s = await store(); const a = s.actions['nm-p-test-dd'];
+  check('a Set up action exists for the future regular payment, due before its first payment', !!a && /^Set up Test overpayment/.test(a.text) && a.dueDate < '2027-02-03' && a.dueDate >= '2027-01-01' && a.status === 'todo', JSON.stringify(a));
+  await page.evaluate(() => { const m = JSON.parse(localStorage.getItem('__mock')); m.plan_items['p-test-cx'] = { ...m.plan_items['p-test-dd'], name: 'Cancelled line', start: '2027-04', end: '2026-11', series: 'p-test-cx' }; localStorage.setItem('__mock', JSON.stringify(m)); });
+  await page.reload(); await page.waitForTimeout(1000);
+  check('a line cancelled before it started gets no action', !(await store()).actions['nm-p-test-cx']);
+  const n = Object.keys((await store()).actions).filter(k => k === 'nm-p-test-dd').length;
+  check('it is not created twice', n === 1);
+});
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
