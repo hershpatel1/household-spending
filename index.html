@@ -476,8 +476,8 @@ function listen(){
   col("transactions",l=>TX=l.map(norm));
   col("budgets",l=>{BUDGETS={};l.forEach(d=>BUDGETS[d.id]=d);});
   col("annualBudgets",l=>{ANNUAL={};l.forEach(d=>ANNUAL[d.id]=d);});
-  col("plan_items",l=>{PLAN=l.filter(p=>!GHOST.has(p.id));setTimeout(healPlan,0);});
-  col("actions",l=>ACTIONS=l);
+  col("plan_items",l=>{PLAN=l.filter(p=>!GHOST.has(p.id));setTimeout(healPlan,0);setTimeout(ensureSetupActions,0);});
+  col("actions",l=>{ACTIONS=l;setTimeout(ensureSetupActions,0);});
   col("planned_payments",l=>PLANNED=l);
   col("budget_rules",l=>{RULES=l;});
   col("month_ends",l=>{ME={};l.forEach(d=>ME[d.id]=d);});
@@ -899,6 +899,13 @@ async function undoChange(p,n){ // remove a scheduled change and let the earlier
   const b=writeBatch(db);b.delete(doc(db,"plan_items",n.id));b.update(doc(db,"plan_items",p.id),{end:n.end||"",updatedAt:serverTimestamp()});await b.commit();
 }
 // self-heal: two versions of the same payment starting in the same month are duplicates; keep the first, with the latest edit
+let setupEnsured=false;
+async function ensureSetupActions(){ // a "set up this direct debit / standing order" action for every future regular payment, created as soon as it is in the plan (due before its first payment); never recreated once done or skipped
+  if(setupEnsured||!LOADED.has("plan_items")||!LOADED.has("actions"))return;setupEnsured=true;
+  try{const todo=nextMoves(curMK(),true).filter(x=>!ACTIONS.some(a=>a.id===x.id));if(!todo.length)return;
+    const b=writeBatch(db);todo.forEach(x=>b.set(doc(db,"actions",x.id),{text:x.text,dueDate:x.dueDate,owner:"Hersh",amount:x.amount||null,reason:"Set up before the first payment",status:"todo",source:"next-month",createdAt:serverTimestamp()}));
+    await b.commit();logError("setupActions",`added ${todo.length} set-up action(s)`);}catch(err){logError("setupActions",err.message);}
+}
 let healing=false;const GHOST=new Set(),healSkip=new Set();
 async function healPlan(){
   if(healing||!LOADED.has("plan_items"))return;
@@ -1251,21 +1258,22 @@ function aniCalc(mid,ps,who){
   const proj=ytd+rest+divs-paid,gross=Math.max(0,proj-S.aniTarget);
   return{rest:r2(rest),divs:r2(divs),paid:r2(paid),proj:r2(proj),gross:r2(gross),cash:r2(gross*0.8)};
 }
-function nextMoves(mid){
-  const a=addMonths(mid,1),b=addMonths(mid,2),out=[];
+function nextMoves(mid,far){ // far: every future start (just the "set up / switch / changes" actions), not only the next two months
+  const a=addMonths(mid,1),b=far?"9999-12":addMonths(mid,2),out=[];
   const prevOf=p=>PLAN.find(x=>x.id!==p.id&&(x.series||x.id)===(p.series||p.id)&&x.end===addMonths(p.start,-1));
   const nextOf=p=>PLAN.find(x=>x.id!==p.id&&(x.series||x.id)===(p.series||p.id)&&x.start===addMonths(p.end,1));
   PLAN.forEach(p=>{
+    if(p.end&&p.start&&p.end<p.start)return; // cancelled before it started
     if(p.kind!=="in"&&p.freq!=="oneoff"&&p.start&&p.start>=a&&p.start<=b){
       const prev=prevOf(p);
-      if(!prev)out.push({id:`nm-${p.id}`,text:`Set up ${p.name}: ${money(p.amount)}, ${schedText(p).toLowerCase()}, from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:addDays(occDate(p,p.start),-10),amount:p.amount});
+      if(!prev)out.push({id:`nm-${p.id}`,text:`Set up ${p.name}: ${money(p.amount)}, ${schedText(p).toLowerCase()}, from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:addDays(occDate(p,p.start),p.kind==="transfer"?-21:-10),amount:p.amount});
       else if(prev.name!==p.name)out.push({id:`nm-${p.id}`,text:`Switch ${prev.name} to ${p.name}: ${money(p.amount)} from ${shortMonth(p.start)}`,dueDate:addDays(occDate(p,p.start),-10),amount:p.amount});
       else if(Number(prev.amount)!==Number(p.amount)&&!p.manual)out.push({id:`nm-${p.id}`,text:`${p.name} changes from ${money(prev.amount)} to ${money(p.amount)} in ${shortMonth(p.start)}${p.kind==="transfer"?": update the standing order":""}`,dueDate:addDays(occDate(p,p.start),-10),amount:p.amount});
     }
-    if(p.end&&p.end>=mid&&p.end<=a&&p.freq!=="oneoff"&&!p.endAction&&!nextOf(p))out.push({id:`nm-end-${p.id}`,text:`Check ${p.name} stops after ${shortMonth(p.end)}${p.kind==="transfer"?" (cancel the standing order if needed)":""}`,dueDate:addDays(occDate(p,p.end),1)});
-    if(p.manual&&planDue(p,a))out.push({id:`nm-pay-${p.id}-${a}`,text:(p.role==="dividend"||/dividend/i.test(p.name))&&p.kind==="in"?`Declare and pay ${p.name}: ${money(p.amount)} into ${p.account} in December, before the company year end on 31 December (dividend allowance; board minute and enough profit needed)`:`Pay ${p.name}: about ${money(p.amount)} from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:(p.role==="dividend"||/dividend/i.test(p.name))&&p.kind==="in"?`${a}-10`:occDate(p,a),amount:p.amount});
+    if(!far&&p.end&&p.end>=mid&&p.end<=a&&p.freq!=="oneoff"&&!p.endAction&&!nextOf(p))out.push({id:`nm-end-${p.id}`,text:`Check ${p.name} stops after ${shortMonth(p.end)}${p.kind==="transfer"?" (cancel the standing order if needed)":""}`,dueDate:addDays(occDate(p,p.end),1)});
+    if(!far&&p.manual&&planDue(p,a))out.push({id:`nm-pay-${p.id}-${a}`,text:(p.role==="dividend"||/dividend/i.test(p.name))&&p.kind==="in"?`Declare and pay ${p.name}: ${money(p.amount)} into ${p.account} in December, before the company year end on 31 December (dividend allowance; board minute and enough profit needed)`:`Pay ${p.name}: about ${money(p.amount)} from ${p.account}${p.kind==="transfer"?" to "+p.to:""}`,dueDate:(p.role==="dividend"||/dividend/i.test(p.name))&&p.kind==="in"?`${a}-10`:occDate(p,a),amount:p.amount});
   });
-  PLANNED.filter(x=>x.status==="planned"&&x.date>=a+"-01"&&x.date<=b+"-31").forEach(x=>out.push({id:`nm-pp-${x.id}`,text:`One-off: ${x.description} ${money(x.amount)} from ${x.account}`,dueDate:x.date,amount:x.amount}));
+  if(!far)PLANNED.filter(x=>x.status==="planned"&&x.date>=a+"-01"&&x.date<=b+"-31").forEach(x=>out.push({id:`nm-pp-${x.id}`,text:`One-off: ${x.description} ${money(x.amount)} from ${x.account}`,dueDate:x.date,amount:x.amount}));
   return out.sort((x,y)=>x.dueDate.localeCompare(y.dueDate));
 }
 const setupPending=()=>!!(OPENING&&OPENING.setup)&&!lastClose();
