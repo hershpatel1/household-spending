@@ -394,5 +394,17 @@ await scenario('Future regular payments get a set-up action straight away', '202
   check('it is not created twice', n === 1);
 });
 
+await scenario('Ledger shows an estimate actual as confirmed with the actual amount', '2026-10-31T12:00:00', async ({ page, go, store }) => {
+  await go('home'); await page.waitForTimeout(200);
+  const inp = page.locator('[data-homeact]').first(); const key = await inp.getAttribute('data-homeact');
+  await inp.fill('181.14'); await inp.dispatchEvent('change'); await page.waitForTimeout(300);
+  const s = await store(); const it = Object.values(s.month_ends || {}).flatMap(m => Object.entries(m.items || {})).find(([k]) => k === key);
+  const pid = key.split('@')[0], p = s.plan_items[pid]; const acc = p.account;
+  await go('feed'); await page.click('[data-fs=ledger]'); await page.click(`[data-lu="${acc}"]`); await page.waitForTimeout(200);
+  const rows = await page.$$eval('#ledger .lrow', els => els.map(e => [e.querySelector('.row-title').textContent, e.querySelector('.chip').textContent, +e.dataset.v]));
+  const r = rows.find(x => x[0] === p.name);
+  check('an entered estimate actual shows as Confirmed, actual with the amount, not Not gone yet', !!it && it[1].status === 'actual' && !!r && /Confirmed/.test(r[1]) && Math.abs(Math.abs(r[2]) - 181.14) < 0.005, JSON.stringify(r));
+});
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed');
 process.exit(failures ? 1 : 0);
