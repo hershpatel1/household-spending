@@ -795,7 +795,7 @@ function ledgerCalc(acc,endArg,midArg){ // one account, oldest first: opening ba
   const rows=[];
   TX.filter(t=>!t.preOpening&&t.date>op.date&&t.date<=end).forEach(t=>{const v=r2(txEffect(t,acc));if(v)rows.push({date:t.date,o:0,title:t.retailer||"(no description)",chip:"Logged",cls:"",v});});
   const ST={exp:["Expected","grey"],conf:["Confirmed",""],ovr:["Confirmed, actual",""],miss:["Missing","warn"],notyet:["Not gone yet","grey"]};
-  occ.forEach(o=>{if(o.p.account!==acc&&o.p.to!==acc)return;const it=items[o.key],st=!it?"exp":it.status==="ticked"?"conf":it.status==="override"?"ovr":it.status==="missing"?"miss":"notyet";
+  occ.forEach(o=>{if(o.p.account!==acc&&o.p.to!==acc)return;const it=items[o.key],st=!it?"exp":it.status==="ticked"?"conf":it.status==="override"||it.status==="actual"?"ovr":it.status==="missing"?"miss":"notyet";
     const amt=isLogged(o.p)||st==="miss"||st==="notyet"?0:(it&&it.amount!=null?Number(it.amount):Number(o.p.amount)),v=r2(occEffect(o,amt,acc));
     if(!v&&st!=="miss"&&st!=="notyet")return;rows.push({date:(it&&it.date)||o.date,o:1,title:o.p.name,chip:ST[st][0],cls:ST[st][1],v,st});});
   rows.sort((a,b)=>a.date.localeCompare(b.date)||a.o-b.o||a.title.localeCompare(b.title));
